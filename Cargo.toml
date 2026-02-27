@@ -1,0 +1,13 @@
+[package]
+name = "notepad"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0"
+description = "A simple notepad application built with iced"
+repository = "https://github.com/Olivier6431/notepad"
+
+[dependencies]
+iced = { version = "0.13", features = ["debug", "tokio"] }
+rfd = "0.15"
+arboard = "3"
+chrono = "0.4"
