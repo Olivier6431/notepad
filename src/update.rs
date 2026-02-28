@@ -8,7 +8,8 @@ use std::time::Instant;
 
 use crate::app::{
     find_input_id, goto_input_id, Document, EditMsg, FileMsg, LineEnding, MenuMsg, Message,
-    Notepad, SearchMsg, TextSnapshot, ViewMsg, MAX_UNDO_HISTORY, UNDO_BATCH_TIMEOUT_MS,
+    Notepad, SearchMsg, TextSnapshot, ViewMsg, FILE_SIZE_LIMIT_MB, FILE_SIZE_WARN_MB,
+    LARGE_FILE_UNDO_HISTORY, MAX_UNDO_HISTORY, UNDO_BATCH_TIMEOUT_MS,
 };
 use crate::preferences::UserPreferences;
 use crate::ui::line_numbers_id;
@@ -69,6 +70,7 @@ impl Notepad {
         if is_edit {
             doc.is_modified = true;
             doc.status_message = None;
+            doc.update_stats_cache();
         }
         if let Some(delta) = scroll_delta {
             let doc = self.active_doc_mut();
@@ -198,7 +200,13 @@ impl Notepad {
                     if doc.is_modified {
                         if let Some(path) = doc.file_path.clone() {
                             let content = doc.content.text();
-                            if std::fs::write(&path, content).is_ok() {
+                            let bytes: Vec<u8> = if doc.encoding != encoding_rs::UTF_8 {
+                                let (encoded, _, _) = doc.encoding.encode(&content);
+                                encoded.into_owned()
+                            } else {
+                                content.into_bytes()
+                            };
+                            if std::fs::write(&path, bytes).is_ok() {
                                 doc.is_modified = false;
                                 let name = path
                                     .file_name()
@@ -272,6 +280,7 @@ impl Notepad {
                                 text_editor::Edit::Backspace,
                             ));
                             doc.is_modified = true;
+                            doc.update_stats_cache();
                         }
                     }
                 }
@@ -287,6 +296,7 @@ impl Notepad {
                                 text_editor::Edit::Paste(Arc::new(clip_text)),
                             ));
                             doc.is_modified = true;
+                            doc.update_stats_cache();
                         }
                         Err(e) => {
                             rfd::MessageDialog::new()
@@ -327,6 +337,7 @@ impl Notepad {
                     text_editor::Edit::Paste(Arc::new(datetime_str)),
                 ));
                 doc.is_modified = true;
+                doc.update_stats_cache();
                 Task::none()
             }
         }
@@ -588,9 +599,9 @@ impl Notepad {
 
     fn push_snapshot(&mut self, snapshot: TextSnapshot) {
         let doc = self.active_doc_mut();
-        doc.undo_stack.push(snapshot);
-        if doc.undo_stack.len() > MAX_UNDO_HISTORY {
-            doc.undo_stack.remove(0);
+        doc.undo_stack.push_back(snapshot);
+        while doc.undo_stack.len() > doc.max_undo {
+            doc.undo_stack.pop_front();
         }
     }
 
@@ -630,7 +641,7 @@ impl Notepad {
 
     fn undo(&mut self) {
         let doc = self.active_doc_mut();
-        if let Some(snapshot) = doc.undo_stack.pop() {
+        if let Some(snapshot) = doc.undo_stack.pop_back() {
             let (cursor_line, cursor_col) = doc.content.cursor_position();
             doc.redo_stack.push(TextSnapshot {
                 text: doc.content.text(),
@@ -639,6 +650,7 @@ impl Notepad {
             });
             doc.content = text_editor::Content::with_text(&snapshot.text);
             doc.is_modified = true;
+            doc.update_stats_cache();
             // navigate_to needs &mut self, so we drop doc first
             let line = snapshot.cursor_line;
             let col = snapshot.cursor_col;
@@ -650,13 +662,14 @@ impl Notepad {
         let doc = self.active_doc_mut();
         if let Some(snapshot) = doc.redo_stack.pop() {
             let (cursor_line, cursor_col) = doc.content.cursor_position();
-            doc.undo_stack.push(TextSnapshot {
+            doc.undo_stack.push_back(TextSnapshot {
                 text: doc.content.text(),
                 cursor_line,
                 cursor_col,
             });
             doc.content = text_editor::Content::with_text(&snapshot.text);
             doc.is_modified = true;
+            doc.update_stats_cache();
             let line = snapshot.cursor_line;
             let col = snapshot.cursor_col;
             self.navigate_to(line, col);
@@ -681,7 +694,13 @@ impl Notepad {
     fn save_to_file(&mut self, path: PathBuf) {
         let doc = self.active_doc_mut();
         let content = doc.content.text();
-        if let Err(e) = std::fs::write(&path, content) {
+        let bytes: Vec<u8> = if doc.encoding != encoding_rs::UTF_8 {
+            let (encoded, _, _) = doc.encoding.encode(&content);
+            encoded.into_owned()
+        } else {
+            content.into_bytes()
+        };
+        if let Err(e) = std::fs::write(&path, bytes) {
             rfd::MessageDialog::new()
                 .set_title("Erreur")
                 .set_description(format!("Impossible d'enregistrer le fichier :\n{e}"))
@@ -701,28 +720,45 @@ impl Notepad {
     }
 
     fn load_from_file(&mut self, path: PathBuf) {
-        match std::fs::read_to_string(&path) {
-            Ok(content_text) => {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("fichier")
-                    .to_string();
-                let doc = self.active_doc_mut();
-                doc.line_ending = LineEnding::detect(&content_text);
-                let mut content = text_editor::Content::with_text(&content_text);
-                content.perform(text_editor::Action::Move(
-                    text_editor::Motion::DocumentEnd,
-                ));
-                doc.content = content;
-                doc.file_path = Some(path);
-                doc.is_modified = false;
-                doc.scroll_offset = 0.0;
-                doc.undo_stack.clear();
-                doc.redo_stack.clear();
-                doc.last_edit_time = None;
-                doc.status_message = Some(format!("Ouvert : {name}"));
+        // --- File size guard ---
+        let file_size_mb = std::fs::metadata(&path)
+            .map(|m| m.len() / (1024 * 1024))
+            .unwrap_or(0);
+
+        if file_size_mb > FILE_SIZE_LIMIT_MB {
+            rfd::MessageDialog::new()
+                .set_title("Fichier trop volumineux")
+                .set_description(format!(
+                    "Ce fichier fait {file_size_mb} Mo.\n\
+                     La limite est de {FILE_SIZE_LIMIT_MB} Mo."
+                ))
+                .set_level(rfd::MessageLevel::Error)
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
+            return;
+        }
+
+        if file_size_mb > FILE_SIZE_WARN_MB {
+            let proceed = matches!(
+                rfd::MessageDialog::new()
+                    .set_title("Fichier volumineux")
+                    .set_description(format!(
+                        "Ce fichier fait {file_size_mb} Mo.\n\
+                         L'ouvrir peut ralentir l'application. Continuer ?"
+                    ))
+                    .set_level(rfd::MessageLevel::Warning)
+                    .set_buttons(rfd::MessageButtons::OkCancel)
+                    .show(),
+                rfd::MessageDialogResult::Ok
+            );
+            if !proceed {
+                return;
             }
+        }
+
+        // --- Read bytes + detect encoding ---
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
             Err(e) => {
                 rfd::MessageDialog::new()
                     .set_title("Erreur")
@@ -730,8 +766,60 @@ impl Notepad {
                     .set_level(rfd::MessageLevel::Error)
                     .set_buttons(rfd::MessageButtons::Ok)
                     .show();
+                return;
             }
+        };
+
+        let (content_text, detected_encoding) = Self::decode_bytes(&bytes);
+
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("fichier")
+            .to_string();
+
+        let doc = self.active_doc_mut();
+        doc.line_ending = LineEnding::detect(&content_text);
+        doc.encoding = detected_encoding;
+        let mut content = text_editor::Content::with_text(&content_text);
+        content.perform(text_editor::Action::Move(
+            text_editor::Motion::DocumentEnd,
+        ));
+        doc.content = content;
+        doc.file_path = Some(path);
+        doc.is_modified = false;
+        doc.scroll_offset = 0.0;
+        doc.undo_stack.clear();
+        doc.redo_stack.clear();
+        doc.last_edit_time = None;
+        doc.status_message = Some(format!("Ouvert : {name}"));
+
+        // Adaptive undo for large files
+        if file_size_mb > 10 {
+            doc.max_undo = LARGE_FILE_UNDO_HISTORY;
+        } else {
+            doc.max_undo = MAX_UNDO_HISTORY;
         }
+
+        doc.update_stats_cache();
+    }
+
+    fn decode_bytes(bytes: &[u8]) -> (String, &'static encoding_rs::Encoding) {
+        // 1. Check BOM
+        if let Some((enc, bom_len)) = encoding_rs::Encoding::for_bom(bytes) {
+            let (text, _, _) = enc.decode(&bytes[bom_len..]);
+            return (text.into_owned(), enc);
+        }
+
+        // 2. Try UTF-8
+        let (text, encoding, had_errors) = encoding_rs::UTF_8.decode(bytes);
+        if !had_errors {
+            return (text.into_owned(), encoding);
+        }
+
+        // 3. Fallback to Windows-1252 (Latin)
+        let (text, encoding, _) = encoding_rs::WINDOWS_1252.decode(bytes);
+        (text.into_owned(), encoding)
     }
 
     fn save_as(&self) -> Task<Message> {
@@ -921,6 +1009,7 @@ impl Notepad {
                     text_editor::Edit::Paste(Arc::new(replacement)),
                 ));
                 doc.is_modified = true;
+                doc.update_stats_cache();
             }
         }
         self.find_next();
@@ -942,6 +1031,7 @@ impl Notepad {
             let doc = self.active_doc_mut();
             doc.content = text_editor::Content::with_text(&new_text);
             doc.is_modified = true;
+            doc.update_stats_cache();
         }
     }
 }
@@ -1310,5 +1400,65 @@ mod tests {
         assert!(n.active_doc().file_path.is_none());
         assert!(!n.active_doc().is_modified);
         assert!(n.active_doc().undo_stack.is_empty());
+    }
+
+    // ============================
+    // decode_bytes / encoding
+    // ============================
+
+    #[test]
+    fn decode_utf8_bytes() {
+        let input = "Bonjour le monde".as_bytes();
+        let (text, enc) = Notepad::decode_bytes(input);
+        assert_eq!(text, "Bonjour le monde");
+        assert_eq!(enc, encoding_rs::UTF_8);
+    }
+
+    #[test]
+    fn decode_utf8_with_bom() {
+        let mut input = vec![0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+        input.extend_from_slice("Hello".as_bytes());
+        let (text, enc) = Notepad::decode_bytes(&input);
+        assert_eq!(text, "Hello");
+        assert_eq!(enc, encoding_rs::UTF_8);
+    }
+
+    #[test]
+    fn decode_latin1_fallback() {
+        // 0xE9 = 'é' in Windows-1252, but invalid in UTF-8
+        let input = vec![0x48, 0x65, 0x6C, 0x6C, 0x6F, 0xE9];
+        let (text, enc) = Notepad::decode_bytes(&input);
+        assert_eq!(text, "Helloé");
+        assert_eq!(enc, encoding_rs::WINDOWS_1252);
+    }
+
+    #[test]
+    fn decode_utf16le_bom() {
+        let mut input = vec![0xFF, 0xFE]; // UTF-16LE BOM
+        input.extend_from_slice(&[0x48, 0x00, 0x69, 0x00]); // "Hi" in UTF-16LE
+        let (text, enc) = Notepad::decode_bytes(&input);
+        assert_eq!(text, "Hi");
+        assert_eq!(enc, encoding_rs::UTF_16LE);
+    }
+
+    #[test]
+    fn push_snapshot_respects_adaptive_max_undo() {
+        let mut n = Notepad::test_default();
+        n.active_doc_mut().max_undo = LARGE_FILE_UNDO_HISTORY;
+        for i in 0..LARGE_FILE_UNDO_HISTORY + 10 {
+            n.push_snapshot(TextSnapshot {
+                text: format!("text{i}"),
+                cursor_line: 0,
+                cursor_col: 0,
+            });
+        }
+        assert_eq!(n.active_doc().undo_stack.len(), LARGE_FILE_UNDO_HISTORY);
+    }
+
+    #[test]
+    fn default_document_encoding_is_utf8() {
+        let doc = Document::default();
+        assert_eq!(doc.encoding, encoding_rs::UTF_8);
+        assert_eq!(doc.max_undo, MAX_UNDO_HISTORY);
     }
 }

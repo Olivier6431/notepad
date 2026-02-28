@@ -357,8 +357,23 @@ impl Notepad {
         let gutter_width = digits as f32 * self.font_size * 0.6 + 20.0;
         let line_number_color = iced::Color { a: 0.45, ..bg_text };
 
+        // Virtual scrolling: only render visible lines + buffer
+        let line_height = self.font_size * 1.3;
+        let visible_lines =
+            ((self.window_height - MENU_BAR_HEIGHT - TAB_BAR_HEIGHT) / line_height) as usize + 2;
+        let buffer = 40;
+        let visible_start = (doc.scroll_offset as usize).saturating_sub(buffer);
+        let visible_end = (visible_start + visible_lines + buffer * 2).min(total_lines);
+
+        let top_spacer_height = visible_start as f32 * line_height;
+        let bottom_spacer_height =
+            (total_lines.saturating_sub(visible_end)) as f32 * line_height;
+
         let mut line_nums = Column::new();
-        for i in 1..=total_lines {
+        if top_spacer_height > 0.0 {
+            line_nums = line_nums.push(Space::new(gutter_width, top_spacer_height));
+        }
+        for i in (visible_start + 1)..=(visible_end) {
             line_nums = line_nums.push(
                 container(
                     text(i.to_string())
@@ -374,6 +389,9 @@ impl Notepad {
                     left: 4.0,
                 }),
             );
+        }
+        if bottom_spacer_height > 0.0 {
+            line_nums = line_nums.push(Space::new(gutter_width, bottom_spacer_height));
         }
 
         let line_gutter = scrollable(
@@ -427,9 +445,8 @@ impl Notepad {
         // --- Status bar ---
         let (line, col) = doc.content.cursor_position();
         let line_count = doc.content.line_count();
-        let content_text = doc.content.text();
-        let char_count = content_text.len();
-        let word_count = content_text.split_whitespace().count();
+        let char_count = doc.cached_char_count;
+        let word_count = doc.cached_word_count;
         let zoom_pct = (self.font_size / DEFAULT_FONT_SIZE * 100.0) as u32;
 
         let mut status_row = row![
@@ -456,7 +473,7 @@ impl Notepad {
             .push(container(text("|").size(11)).padding([0, 8]))
             .push(text(doc.line_ending.label()).size(11))
             .push(container(text("|").size(11)).padding([0, 8]))
-            .push(text("UTF-8").size(11));
+            .push(text(doc.encoding.name()).size(11));
 
         let status_bar = container(status_row)
             .style(bar_style(bg_weak, bg_strong))

@@ -1,5 +1,6 @@
 use iced::widget::{text_editor, text_input};
 use iced::{Event, Subscription, Task, Theme};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -9,7 +10,10 @@ use crate::{
 };
 
 pub const MAX_UNDO_HISTORY: usize = 200;
+pub const LARGE_FILE_UNDO_HISTORY: usize = 20;
 pub const UNDO_BATCH_TIMEOUT_MS: u128 = 300;
+pub const FILE_SIZE_WARN_MB: u64 = 50;
+pub const FILE_SIZE_LIMIT_MB: u64 = 500;
 pub const MENU_BAR_HEIGHT: f32 = 30.0;
 pub const TAB_BAR_HEIGHT: f32 = 32.0;
 pub const MENU_ITEM_WIDTH: f32 = 220.0;
@@ -38,12 +42,18 @@ pub struct Document {
     pub content: text_editor::Content,
     pub file_path: Option<PathBuf>,
     pub is_modified: bool,
-    pub undo_stack: Vec<TextSnapshot>,
+    pub undo_stack: VecDeque<TextSnapshot>,
     pub redo_stack: Vec<TextSnapshot>,
     pub last_edit_time: Option<Instant>,
     pub line_ending: LineEnding,
+    pub encoding: &'static encoding_rs::Encoding,
     pub scroll_offset: f32,
     pub status_message: Option<String>,
+    pub max_undo: usize,
+
+    // Cached stats (updated on edit, not every frame)
+    pub cached_word_count: usize,
+    pub cached_char_count: usize,
 }
 
 impl Default for Document {
@@ -54,12 +64,16 @@ impl Default for Document {
             content,
             file_path: None,
             is_modified: false,
-            undo_stack: Vec::new(),
+            undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
             last_edit_time: None,
             line_ending: LineEnding::Lf,
+            encoding: encoding_rs::UTF_8,
             scroll_offset: 0.0,
+            max_undo: MAX_UNDO_HISTORY,
             status_message: None,
+            cached_word_count: 0,
+            cached_char_count: 0,
         }
     }
 }
@@ -78,7 +92,14 @@ impl Document {
             name.to_string()
         }
     }
+
+    pub fn update_stats_cache(&mut self) {
+        let text = self.content.text();
+        self.cached_char_count = text.len();
+        self.cached_word_count = text.split_whitespace().count();
+    }
 }
+
 
 // --- Enums ---
 
