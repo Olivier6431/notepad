@@ -80,23 +80,33 @@ impl Notepad {
 
     // --- File operations ---
 
+    fn confirm_discard(
+        description: &'static str,
+        on_confirm: impl Fn(bool) -> Message + Send + 'static,
+    ) -> Task<Message> {
+        Task::perform(
+            async move {
+                matches!(
+                    rfd::AsyncMessageDialog::new()
+                        .set_title("Notepad")
+                        .set_description(description)
+                        .set_buttons(rfd::MessageButtons::OkCancel)
+                        .set_level(rfd::MessageLevel::Warning)
+                        .show()
+                        .await,
+                    rfd::MessageDialogResult::Ok
+                )
+            },
+            on_confirm,
+        )
+    }
+
     fn handle_file(&mut self, msg: FileMsg) -> Task<Message> {
         match msg {
             FileMsg::New => {
                 if self.is_modified {
-                    Task::perform(
-                        async {
-                            matches!(
-                                rfd::AsyncMessageDialog::new()
-                                    .set_title("Notepad")
-                                    .set_description("Le document a été modifié. Voulez-vous continuer sans enregistrer ?")
-                                    .set_buttons(rfd::MessageButtons::OkCancel)
-                                    .set_level(rfd::MessageLevel::Warning)
-                                    .show()
-                                    .await,
-                                rfd::MessageDialogResult::Ok
-                            )
-                        },
+                    Self::confirm_discard(
+                        "Le document a été modifié. Voulez-vous continuer sans enregistrer ?",
                         |confirmed| Message::File(FileMsg::ConfirmNewResult(confirmed)),
                     )
                 } else {
@@ -115,19 +125,8 @@ impl Notepad {
             FileMsg::SaveAs => self.save_as(),
             FileMsg::Open => {
                 if self.is_modified {
-                    Task::perform(
-                        async {
-                            matches!(
-                                rfd::AsyncMessageDialog::new()
-                                    .set_title("Notepad")
-                                    .set_description("Le document a été modifié. Voulez-vous continuer sans enregistrer ?")
-                                    .set_buttons(rfd::MessageButtons::OkCancel)
-                                    .set_level(rfd::MessageLevel::Warning)
-                                    .show()
-                                    .await,
-                                rfd::MessageDialogResult::Ok
-                            )
-                        },
+                    Self::confirm_discard(
+                        "Le document a été modifié. Voulez-vous continuer sans enregistrer ?",
                         |confirmed| Message::File(FileMsg::ConfirmOpenResult(confirmed)),
                     )
                 } else {
@@ -161,19 +160,8 @@ impl Notepad {
             }
             FileMsg::CloseRequested(id) => {
                 if self.is_modified {
-                    Task::perform(
-                        async {
-                            matches!(
-                                rfd::AsyncMessageDialog::new()
-                                    .set_title("Notepad")
-                                    .set_description("Le document a été modifié. Voulez-vous quitter sans enregistrer ?")
-                                    .set_buttons(rfd::MessageButtons::OkCancel)
-                                    .set_level(rfd::MessageLevel::Warning)
-                                    .show()
-                                    .await,
-                                rfd::MessageDialogResult::Ok
-                            )
-                        },
+                    Self::confirm_discard(
+                        "Le document a été modifié. Voulez-vous quitter sans enregistrer ?",
                         move |confirmed| Message::File(FileMsg::ConfirmCloseResult(confirmed, id)),
                     )
                 } else {
@@ -1158,7 +1146,7 @@ mod tests {
     fn push_snapshot_respects_max_history() {
         let mut n = Notepad::test_default();
         for i in 0..MAX_UNDO_HISTORY + 10 {
-            n.push_snapshot(crate::app::TextSnapshot {
+            n.push_snapshot(TextSnapshot {
                 text: format!("text{i}"),
                 cursor_line: 0,
                 cursor_col: 0,
@@ -1213,7 +1201,7 @@ mod tests {
         n.file_path = Some(PathBuf::from("/tmp/test.txt"));
         n.is_modified = true;
         n.save_snapshot();
-        n.undo_stack.push(crate::app::TextSnapshot {
+        n.undo_stack.push(TextSnapshot {
             text: "old".to_string(),
             cursor_line: 0,
             cursor_col: 0,
