@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::app::{
-    find_input_id, goto_input_id, EditMsg, FileMsg, LineEnding, MenuMsg, Message, Notepad,
-    SearchMsg, TextSnapshot, ViewMsg, MAX_UNDO_HISTORY, UNDO_BATCH_TIMEOUT_MS,
+    find_input_id, goto_input_id, Document, EditMsg, FileMsg, LineEnding, MenuMsg, Message,
+    Notepad, SearchMsg, TextSnapshot, ViewMsg, MAX_UNDO_HISTORY, UNDO_BATCH_TIMEOUT_MS,
 };
 use crate::preferences::UserPreferences;
 use crate::ui::line_numbers_id;
@@ -64,14 +64,16 @@ impl Notepad {
         if is_edit {
             self.save_snapshot_if_needed();
         }
-        self.content.perform(action);
+        let doc = self.active_doc_mut();
+        doc.content.perform(action);
         if is_edit {
-            self.is_modified = true;
-            self.status_message = None;
+            doc.is_modified = true;
+            doc.status_message = None;
         }
         if let Some(delta) = scroll_delta {
-            let max_offset = self.content.line_count().saturating_sub(1) as f32;
-            self.scroll_offset = (self.scroll_offset + delta as f32).clamp(0.0, max_offset);
+            let doc = self.active_doc_mut();
+            let max_offset = doc.content.line_count().saturating_sub(1) as f32;
+            doc.scroll_offset = (doc.scroll_offset + delta as f32).clamp(0.0, max_offset);
             self.sync_line_numbers()
         } else {
             Task::none()
@@ -103,19 +105,42 @@ impl Notepad {
 
     fn handle_file(&mut self, msg: FileMsg) -> Task<Message> {
         match msg {
-            FileMsg::New => {
-                if self.is_modified {
+            FileMsg::NewTab => {
+                self.tabs.push(Document::default());
+                self.active_tab = self.tabs.len() - 1;
+                Task::none()
+            }
+            FileMsg::CloseTab(index) => {
+                if index >= self.tabs.len() {
+                    return Task::none();
+                }
+                if self.tabs[index].is_modified {
                     Self::confirm_discard(
-                        "Le document a été modifié. Voulez-vous continuer sans enregistrer ?",
-                        |confirmed| Message::File(FileMsg::ConfirmNewResult(confirmed)),
+                        "Le document a été modifié. Voulez-vous fermer sans enregistrer ?",
+                        move |confirmed| {
+                            Message::File(FileMsg::ConfirmCloseTabResult(confirmed, index))
+                        },
                     )
                 } else {
-                    self.reset_document();
+                    self.remove_tab(index);
                     Task::none()
                 }
             }
+            FileMsg::ConfirmCloseTabResult(confirmed, index) => {
+                if confirmed {
+                    self.remove_tab(index);
+                }
+                Task::none()
+            }
+            FileMsg::SwitchTab(index) => {
+                if index < self.tabs.len() {
+                    self.active_tab = index;
+                    self.find_cursor = 0;
+                }
+                Task::none()
+            }
             FileMsg::Save => {
-                if let Some(path) = self.file_path.clone() {
+                if let Some(path) = self.active_doc().file_path.clone() {
                     self.save_to_file(path);
                     Task::none()
                 } else {
@@ -124,14 +149,8 @@ impl Notepad {
             }
             FileMsg::SaveAs => self.save_as(),
             FileMsg::Open => {
-                if self.is_modified {
-                    Self::confirm_discard(
-                        "Le document a été modifié. Voulez-vous continuer sans enregistrer ?",
-                        |confirmed| Message::File(FileMsg::ConfirmOpenResult(confirmed)),
-                    )
-                } else {
-                    self.open_file()
-                }
+                // Open in a new tab (like Windows Notepad)
+                self.open_file()
             }
             FileMsg::SaveFileSelected(path) => {
                 if let Some(path) = path {
@@ -141,28 +160,27 @@ impl Notepad {
             }
             FileMsg::OpenFileSelected(path) => {
                 if let Some(path) = path {
+                    // If current tab is empty and unmodified, reuse it
+                    let doc = self.active_doc();
+                    let reuse = !doc.is_modified
+                        && doc.file_path.is_none()
+                        && doc.content.text().trim().is_empty();
+                    if !reuse {
+                        self.tabs.push(Document::default());
+                        self.active_tab = self.tabs.len() - 1;
+                    }
                     self.load_from_file(path);
                 }
                 Task::none()
             }
-            FileMsg::ConfirmNewResult(confirmed) => {
-                if confirmed {
-                    self.reset_document();
-                }
-                Task::none()
-            }
-            FileMsg::ConfirmOpenResult(confirmed) => {
-                if confirmed {
-                    self.open_file()
-                } else {
-                    Task::none()
-                }
-            }
             FileMsg::CloseRequested(id) => {
-                if self.is_modified {
+                let any_modified = self.tabs.iter().any(|doc| doc.is_modified);
+                if any_modified {
                     Self::confirm_discard(
-                        "Le document a été modifié. Voulez-vous quitter sans enregistrer ?",
-                        move |confirmed| Message::File(FileMsg::ConfirmCloseResult(confirmed, id)),
+                        "Des documents ont été modifiés. Voulez-vous quitter sans enregistrer ?",
+                        move |confirmed| {
+                            Message::File(FileMsg::ConfirmCloseResult(confirmed, id))
+                        },
                     )
                 } else {
                     iced::window::close(id)
@@ -176,12 +194,38 @@ impl Notepad {
                 }
             }
             FileMsg::AutoSave => {
-                if let Some(path) = self.file_path.clone() {
-                    if self.is_modified {
-                        self.save_to_file(path);
+                for doc in &mut self.tabs {
+                    if doc.is_modified {
+                        if let Some(path) = doc.file_path.clone() {
+                            let content = doc.content.text();
+                            if std::fs::write(&path, content).is_ok() {
+                                doc.is_modified = false;
+                                let name = path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("fichier")
+                                    .to_string();
+                                doc.status_message = Some(format!("Enregistré : {name}"));
+                            }
+                        }
                     }
                 }
                 Task::none()
+            }
+        }
+    }
+
+    fn remove_tab(&mut self, index: usize) {
+        if self.tabs.len() <= 1 {
+            // Last tab: replace with empty document
+            self.tabs[0] = Document::default();
+            self.active_tab = 0;
+        } else {
+            self.tabs.remove(index);
+            if self.active_tab >= self.tabs.len() {
+                self.active_tab = self.tabs.len() - 1;
+            } else if self.active_tab > index {
+                self.active_tab -= 1;
             }
         }
     }
@@ -191,8 +235,9 @@ impl Notepad {
     fn handle_edit(&mut self, msg: EditMsg) -> Task<Message> {
         match msg {
             EditMsg::Copy => {
+                let doc = &self.tabs[self.active_tab];
                 if let Some(clipboard) = &mut self.clipboard {
-                    if let Some(selected) = self.content.selection() {
+                    if let Some(selected) = doc.content.selection() {
                         if let Err(e) = clipboard.set_text(selected) {
                             rfd::MessageDialog::new()
                                 .set_title("Erreur")
@@ -208,8 +253,9 @@ impl Notepad {
                 Task::none()
             }
             EditMsg::Cut => {
+                let selected = self.tabs[self.active_tab].content.selection();
                 if let Some(clipboard) = &mut self.clipboard {
-                    if let Some(selected) = self.content.selection() {
+                    if let Some(selected) = selected {
                         if let Err(e) = clipboard.set_text(selected) {
                             rfd::MessageDialog::new()
                                 .set_title("Erreur")
@@ -221,10 +267,11 @@ impl Notepad {
                                 .show();
                         } else {
                             self.save_snapshot();
-                            self.content.perform(text_editor::Action::Edit(
+                            let doc = self.active_doc_mut();
+                            doc.content.perform(text_editor::Action::Edit(
                                 text_editor::Edit::Backspace,
                             ));
-                            self.is_modified = true;
+                            doc.is_modified = true;
                         }
                     }
                 }
@@ -235,10 +282,11 @@ impl Notepad {
                     match clipboard.get_text() {
                         Ok(clip_text) => {
                             self.save_snapshot();
-                            self.content.perform(text_editor::Action::Edit(
+                            let doc = self.active_doc_mut();
+                            doc.content.perform(text_editor::Action::Edit(
                                 text_editor::Edit::Paste(Arc::new(clip_text)),
                             ));
-                            self.is_modified = true;
+                            doc.is_modified = true;
                         }
                         Err(e) => {
                             rfd::MessageDialog::new()
@@ -255,9 +303,10 @@ impl Notepad {
                 Task::none()
             }
             EditMsg::SelectAll => {
-                self.content
+                let doc = self.active_doc_mut();
+                doc.content
                     .perform(text_editor::Action::Move(text_editor::Motion::DocumentStart));
-                self.content
+                doc.content
                     .perform(text_editor::Action::Select(text_editor::Motion::DocumentEnd));
                 Task::none()
             }
@@ -273,10 +322,11 @@ impl Notepad {
                 let now = chrono::Local::now();
                 let datetime_str = now.format("%H:%M %d/%m/%Y").to_string();
                 self.save_snapshot();
-                self.content.perform(text_editor::Action::Edit(
+                let doc = self.active_doc_mut();
+                doc.content.perform(text_editor::Action::Edit(
                     text_editor::Edit::Paste(Arc::new(datetime_str)),
                 ));
-                self.is_modified = true;
+                doc.is_modified = true;
                 Task::none()
             }
         }
@@ -422,12 +472,10 @@ impl Notepad {
     // --- Event handling ---
 
     fn handle_event(&mut self, event: Event) -> Task<Message> {
-        // Track mouse position for context menu
         if let Event::Mouse(iced::mouse::Event::CursorMoved { position }) = &event {
             self.mouse_position = *position;
         }
 
-        // Track window resize
         if let Event::Window(iced::window::Event::Resized(size)) = &event {
             self.window_width = size.width;
             self.window_height = size.height;
@@ -439,7 +487,6 @@ impl Notepad {
         }) = event
         {
             match (key.as_ref(), modifiers) {
-                // Escape - close menus first, then panels
                 (Key::Named(Named::Escape), _) => {
                     if self.active_menu.is_some() || self.show_context_menu {
                         self.active_menu = None;
@@ -450,23 +497,41 @@ impl Notepad {
                         self.show_goto = false;
                     }
                 }
-                // F3 - Find Next
                 (Key::Named(Named::F3), _) => {
                     return self.handle_search(SearchMsg::FindNext);
                 }
-                // F5 - Date/Time
                 (Key::Named(Named::F5), _) => {
                     return self.handle_edit(EditMsg::InsertDateTime);
                 }
+                // Ctrl+Tab - next tab
+                (Key::Named(Named::Tab), Modifiers::CTRL) => {
+                    if !self.tabs.is_empty() {
+                        self.active_tab = (self.active_tab + 1) % self.tabs.len();
+                        self.find_cursor = 0;
+                    }
+                }
+                // Ctrl+Shift+Tab - previous tab
+                (Key::Named(Named::Tab), m) if m == (Modifiers::CTRL | Modifiers::SHIFT) => {
+                    if !self.tabs.is_empty() {
+                        self.active_tab = if self.active_tab == 0 {
+                            self.tabs.len() - 1
+                        } else {
+                            self.active_tab - 1
+                        };
+                        self.find_cursor = 0;
+                    }
+                }
                 // Ctrl+Shift+S - Save As
-                (Key::Character("s"), m)
-                    if m == (Modifiers::CTRL | Modifiers::SHIFT) =>
-                {
+                (Key::Character("s"), m) if m == (Modifiers::CTRL | Modifiers::SHIFT) => {
                     return self.handle_file(FileMsg::SaveAs);
                 }
-                // Ctrl+key combinations
+                // Ctrl+W - Close tab
+                (Key::Character("w"), Modifiers::CTRL) => {
+                    let idx = self.active_tab;
+                    return self.handle_file(FileMsg::CloseTab(idx));
+                }
                 (Key::Character("n"), Modifiers::CTRL) => {
-                    return self.handle_file(FileMsg::New);
+                    return self.handle_file(FileMsg::NewTab);
                 }
                 (Key::Character("s"), Modifiers::CTRL) => {
                     return self.handle_file(FileMsg::Save);
@@ -489,7 +554,6 @@ impl Notepad {
                 (Key::Character("g"), Modifiers::CTRL) => {
                     return self.handle_search(SearchMsg::OpenGoTo);
                 }
-                // Zoom
                 (Key::Character("="), Modifiers::CTRL) => {
                     return self.handle_view(ViewMsg::ZoomIn);
                 }
@@ -520,84 +584,82 @@ impl Notepad {
         .save();
     }
 
-    // --- Document management ---
-
-    fn reset_document(&mut self) {
-        self.content = text_editor::Content::with_text("");
-        self.content
-            .perform(text_editor::Action::Click(iced::Point::new(0.0, 0.0)));
-        self.file_path = None;
-        self.is_modified = false;
-        self.scroll_offset = 0.0;
-        self.undo_stack.clear();
-        self.redo_stack.clear();
-        self.last_edit_time = None;
-        self.status_message = Some("Nouveau document".to_string());
-    }
-
     // --- Undo/Redo ---
 
     fn push_snapshot(&mut self, snapshot: TextSnapshot) {
-        self.undo_stack.push(snapshot);
-        if self.undo_stack.len() > MAX_UNDO_HISTORY {
-            self.undo_stack.remove(0);
+        let doc = self.active_doc_mut();
+        doc.undo_stack.push(snapshot);
+        if doc.undo_stack.len() > MAX_UNDO_HISTORY {
+            doc.undo_stack.remove(0);
         }
     }
 
     fn save_snapshot(&mut self) {
-        let (cursor_line, cursor_col) = self.content.cursor_position();
-        self.push_snapshot(TextSnapshot {
-            text: self.content.text(),
+        let doc = self.active_doc_mut();
+        let (cursor_line, cursor_col) = doc.content.cursor_position();
+        let snapshot = TextSnapshot {
+            text: doc.content.text(),
             cursor_line,
             cursor_col,
-        });
-        self.redo_stack.clear();
-        self.last_edit_time = None;
+        };
+        self.push_snapshot(snapshot);
+        let doc = self.active_doc_mut();
+        doc.redo_stack.clear();
+        doc.last_edit_time = None;
     }
 
     fn save_snapshot_if_needed(&mut self) {
         let now = Instant::now();
-        let should_save = match self.last_edit_time {
+        let doc = self.active_doc_mut();
+        let should_save = match doc.last_edit_time {
             Some(last) => now.duration_since(last).as_millis() > UNDO_BATCH_TIMEOUT_MS,
             None => true,
         };
         if should_save {
-            let (cursor_line, cursor_col) = self.content.cursor_position();
-            self.push_snapshot(TextSnapshot {
-                text: self.content.text(),
+            let (cursor_line, cursor_col) = doc.content.cursor_position();
+            let snapshot = TextSnapshot {
+                text: doc.content.text(),
                 cursor_line,
                 cursor_col,
-            });
-            self.redo_stack.clear();
+            };
+            self.push_snapshot(snapshot);
+            self.active_doc_mut().redo_stack.clear();
         }
-        self.last_edit_time = Some(now);
+        self.active_doc_mut().last_edit_time = Some(now);
     }
 
     fn undo(&mut self) {
-        if let Some(snapshot) = self.undo_stack.pop() {
-            let (cursor_line, cursor_col) = self.content.cursor_position();
-            self.redo_stack.push(TextSnapshot {
-                text: self.content.text(),
+        let doc = self.active_doc_mut();
+        if let Some(snapshot) = doc.undo_stack.pop() {
+            let (cursor_line, cursor_col) = doc.content.cursor_position();
+            doc.redo_stack.push(TextSnapshot {
+                text: doc.content.text(),
                 cursor_line,
                 cursor_col,
             });
-            self.content = text_editor::Content::with_text(&snapshot.text);
-            self.navigate_to(snapshot.cursor_line, snapshot.cursor_col);
-            self.is_modified = true;
+            doc.content = text_editor::Content::with_text(&snapshot.text);
+            doc.is_modified = true;
+            // navigate_to needs &mut self, so we drop doc first
+            let line = snapshot.cursor_line;
+            let col = snapshot.cursor_col;
+            self.navigate_to(line, col);
         }
     }
 
     fn redo(&mut self) {
-        if let Some(snapshot) = self.redo_stack.pop() {
-            let (cursor_line, cursor_col) = self.content.cursor_position();
-            self.undo_stack.push(TextSnapshot {
-                text: self.content.text(),
+        let doc = self.active_doc_mut();
+        if let Some(snapshot) = doc.redo_stack.pop() {
+            let (cursor_line, cursor_col) = doc.content.cursor_position();
+            doc.undo_stack.push(TextSnapshot {
+                text: doc.content.text(),
                 cursor_line,
                 cursor_col,
             });
-            self.content = text_editor::Content::with_text(&snapshot.text);
-            self.navigate_to(snapshot.cursor_line, snapshot.cursor_col);
-            self.is_modified = true;
+            doc.content = text_editor::Content::with_text(&snapshot.text);
+            doc.is_modified = true;
+            let line = snapshot.cursor_line;
+            let col = snapshot.cursor_col;
+            self.navigate_to(line, col);
         }
     }
 
@@ -609,7 +671,7 @@ impl Notepad {
             line_numbers_id(),
             scrollable::AbsoluteOffset {
                 x: 0.0,
-                y: self.scroll_offset * line_height,
+                y: self.active_doc().scroll_offset * line_height,
             },
         )
     }
@@ -617,7 +679,8 @@ impl Notepad {
     // --- File I/O ---
 
     fn save_to_file(&mut self, path: PathBuf) {
-        let content = self.content.text();
+        let doc = self.active_doc_mut();
+        let content = doc.content.text();
         if let Err(e) = std::fs::write(&path, content) {
             rfd::MessageDialog::new()
                 .set_title("Erreur")
@@ -631,9 +694,9 @@ impl Notepad {
                 .and_then(|n| n.to_str())
                 .unwrap_or("fichier")
                 .to_string();
-            self.file_path = Some(path);
-            self.is_modified = false;
-            self.status_message = Some(format!("Enregistré : {name}"));
+            doc.file_path = Some(path);
+            doc.is_modified = false;
+            doc.status_message = Some(format!("Enregistré : {name}"));
         }
     }
 
@@ -645,19 +708,20 @@ impl Notepad {
                     .and_then(|n| n.to_str())
                     .unwrap_or("fichier")
                     .to_string();
-                self.line_ending = LineEnding::detect(&content_text);
+                let doc = self.active_doc_mut();
+                doc.line_ending = LineEnding::detect(&content_text);
                 let mut content = text_editor::Content::with_text(&content_text);
                 content.perform(text_editor::Action::Move(
                     text_editor::Motion::DocumentEnd,
                 ));
-                self.content = content;
-                self.file_path = Some(path);
-                self.is_modified = false;
-                self.scroll_offset = 0.0;
-                self.undo_stack.clear();
-                self.redo_stack.clear();
-                self.last_edit_time = None;
-                self.status_message = Some(format!("Ouvert : {name}"));
+                doc.content = content;
+                doc.file_path = Some(path);
+                doc.is_modified = false;
+                doc.scroll_offset = 0.0;
+                doc.undo_stack.clear();
+                doc.redo_stack.clear();
+                doc.last_edit_time = None;
+                doc.status_message = Some(format!("Ouvert : {name}"));
             }
             Err(e) => {
                 rfd::MessageDialog::new()
@@ -703,8 +767,9 @@ impl Notepad {
     // --- Find & Replace ---
 
     fn navigate_to(&mut self, line: usize, col: usize) {
-        let (current_line, _) = self.content.cursor_position();
-        let last_line = self.content.line_count().saturating_sub(1);
+        let doc = self.active_doc_mut();
+        let (current_line, _) = doc.content.cursor_position();
+        let last_line = doc.content.line_count().saturating_sub(1);
         let target_line = line.min(last_line);
 
         let from_start = target_line;
@@ -716,45 +781,45 @@ impl Notepad {
         if min_moves == from_current {
             if target_line > current_line {
                 for _ in 0..(target_line - current_line) {
-                    self.content
+                    doc.content
                         .perform(text_editor::Action::Move(text_editor::Motion::Down));
                 }
             } else {
                 for _ in 0..(current_line - target_line) {
-                    self.content
+                    doc.content
                         .perform(text_editor::Action::Move(text_editor::Motion::Up));
                 }
             }
         } else if min_moves == from_start {
-            self.content
+            doc.content
                 .perform(text_editor::Action::Move(text_editor::Motion::DocumentStart));
             for _ in 0..target_line {
-                self.content
+                doc.content
                     .perform(text_editor::Action::Move(text_editor::Motion::Down));
             }
         } else {
-            self.content
+            doc.content
                 .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
             for _ in 0..from_end {
-                self.content
+                doc.content
                     .perform(text_editor::Action::Move(text_editor::Motion::Up));
             }
         }
 
-        self.content
+        doc.content
             .perform(text_editor::Action::Move(text_editor::Motion::Home));
         for _ in 0..col {
-            self.content
+            doc.content
                 .perform(text_editor::Action::Move(text_editor::Motion::Right));
         }
 
-        // Update scroll estimate for line number sync
-        self.scroll_offset = target_line as f32;
+        doc.scroll_offset = target_line as f32;
     }
 
     fn select_chars(&mut self, count: usize) {
+        let doc = self.active_doc_mut();
         for _ in 0..count {
-            self.content
+            doc.content
                 .perform(text_editor::Action::Select(text_editor::Motion::Right));
         }
     }
@@ -767,8 +832,6 @@ impl Notepad {
         self.select_chars(match_chars);
     }
 
-    /// Build a regex from the current find_query and settings.
-    /// Returns None if use_regex is on and the pattern is invalid.
     fn build_regex(&self) -> Option<regex::Regex> {
         let pattern = if self.use_regex {
             self.find_query.clone()
@@ -783,16 +846,12 @@ impl Notepad {
         regex::Regex::new(&full).ok()
     }
 
-    /// Find first match in `haystack` starting at byte offset `from`.
-    /// Returns (byte_pos, match_len) in the original text.
     fn find_in(&self, haystack: &str, from: usize) -> Option<(usize, usize)> {
         let re = self.build_regex()?;
         re.find(&haystack[from..])
             .map(|m| (from + m.start(), m.len()))
     }
 
-    /// Find last match in `haystack` up to byte offset `until`.
-    /// Returns (byte_pos, match_len) in the original text.
     fn rfind_in(&self, haystack: &str, until: usize) -> Option<(usize, usize)> {
         let re = self.build_regex()?;
         let mut last = None;
@@ -803,7 +862,7 @@ impl Notepad {
     }
 
     fn find_next(&mut self) {
-        let text = self.content.text();
+        let text = self.active_doc().content.text();
         if self.find_query.is_empty() || text.is_empty() {
             return;
         }
@@ -815,7 +874,6 @@ impl Notepad {
             None
         };
 
-        // Wrap around if not found
         let found = found.or_else(|| self.find_in(&text, 0));
 
         if let Some((byte_pos, mlen)) = found {
@@ -824,7 +882,7 @@ impl Notepad {
     }
 
     fn find_previous(&mut self) {
-        let text = self.content.text();
+        let text = self.active_doc().content.text();
         if self.find_query.is_empty() || text.is_empty() {
             return;
         }
@@ -837,7 +895,6 @@ impl Notepad {
             None
         };
 
-        // Wrap around if not found
         let found = found.or_else(|| self.rfind_in(&text, text.len()));
 
         if let Some((byte_pos, mlen)) = found {
@@ -849,7 +906,7 @@ impl Notepad {
         if self.find_query.is_empty() {
             return;
         }
-        if let Some(selected) = self.content.selection() {
+        if let Some(selected) = self.active_doc().content.selection() {
             let is_match = if let Some(re) = self.build_regex() {
                 re.is_match(&selected)
                     && re.find(&selected).is_some_and(|m| m.len() == selected.len())
@@ -858,10 +915,12 @@ impl Notepad {
             };
             if is_match {
                 self.save_snapshot();
-                self.content.perform(text_editor::Action::Edit(
-                    text_editor::Edit::Paste(Arc::new(self.replace_query.clone())),
+                let replacement = self.replace_query.clone();
+                let doc = self.active_doc_mut();
+                doc.content.perform(text_editor::Action::Edit(
+                    text_editor::Edit::Paste(Arc::new(replacement)),
                 ));
-                self.is_modified = true;
+                doc.is_modified = true;
             }
         }
         self.find_next();
@@ -874,12 +933,15 @@ impl Notepad {
         let Some(re) = self.build_regex() else {
             return;
         };
-        let text = self.content.text();
-        let new_text = re.replace_all(&text, self.replace_query.as_str()).into_owned();
+        let text = self.active_doc().content.text();
+        let new_text = re
+            .replace_all(&text, self.replace_query.as_str())
+            .into_owned();
         if text != new_text {
             self.save_snapshot();
-            self.content = text_editor::Content::with_text(&new_text);
-            self.is_modified = true;
+            let doc = self.active_doc_mut();
+            doc.content = text_editor::Content::with_text(&new_text);
+            doc.is_modified = true;
         }
     }
 }
@@ -889,10 +951,9 @@ mod tests {
     use super::*;
     use crate::app::{Notepad, MAX_UNDO_HISTORY};
 
-    // Helper to create a Notepad with specific text content
     fn notepad_with(text: &str) -> Notepad {
         let mut n = Notepad::test_default();
-        n.content = text_editor::Content::with_text(text);
+        n.active_doc_mut().content = text_editor::Content::with_text(text);
         n
     }
 
@@ -912,7 +973,6 @@ mod tests {
 
     #[test]
     fn byte_pos_start_second_line() {
-        // byte 6 is 'w' in "world"
         assert_eq!(byte_pos_to_line_col("hello\nworld", 6), (1, 0));
     }
 
@@ -929,11 +989,8 @@ mod tests {
 
     #[test]
     fn byte_pos_multibyte_chars() {
-        // 'é' is 2 bytes in UTF-8
         let text = "café\nbar";
-        // byte 6 = after "café\n" (c=1, a=1, f=1, é=2, \n=1 → 6)
         assert_eq!(byte_pos_to_line_col(text, 6), (1, 0));
-        // byte 3 = 'é' starts at byte 3, col should count chars not bytes
         assert_eq!(byte_pos_to_line_col(text, 3), (0, 3));
     }
 
@@ -1008,7 +1065,7 @@ mod tests {
         n.use_regex = false;
         let re = n.build_regex().unwrap();
         assert!(re.is_match("a.b"));
-        assert!(!re.is_match("axb")); // '.' is escaped, not wildcard
+        assert!(!re.is_match("axb"));
     }
 
     // ============================
@@ -1017,8 +1074,7 @@ mod tests {
 
     #[test]
     fn find_in_from_start() {
-        let n = notepad_with("hello world hello");
-        let mut n = n;
+        let mut n = notepad_with("hello world hello");
         n.find_query = "hello".to_string();
         n.case_sensitive = true;
         assert_eq!(n.find_in("hello world hello", 0), Some((0, 5)));
@@ -1065,21 +1121,21 @@ mod tests {
     fn find_next_empty_query_no_crash() {
         let mut n = notepad_with("some text");
         n.find_query = String::new();
-        n.find_next(); // should not panic
+        n.find_next();
     }
 
     #[test]
     fn find_next_empty_text_no_crash() {
         let mut n = notepad_with("");
         n.find_query = "abc".to_string();
-        n.find_next(); // should not panic
+        n.find_next();
     }
 
     #[test]
     fn find_previous_empty_query_no_crash() {
         let mut n = notepad_with("some text");
         n.find_query = String::new();
-        n.find_previous(); // should not panic
+        n.find_previous();
     }
 
     #[test]
@@ -1087,10 +1143,8 @@ mod tests {
         let mut n = notepad_with("abc def abc");
         n.find_query = "abc".to_string();
         n.case_sensitive = true;
-        // Set cursor past last match
         n.find_cursor = 100;
         n.find_next();
-        // After wrap-around, find_cursor should be updated (past position 0)
         assert!(n.find_cursor > 0);
     }
 
@@ -1105,8 +1159,8 @@ mod tests {
         n.replace_query = "hi".to_string();
         n.case_sensitive = true;
         n.replace_all();
-        assert_eq!(n.content.text().trim_end(), "hi world hi");
-        assert!(n.is_modified);
+        assert_eq!(n.active_doc().content.text().trim_end(), "hi world hi");
+        assert!(n.active_doc().is_modified);
     }
 
     #[test]
@@ -1116,7 +1170,7 @@ mod tests {
         n.replace_query = "hi".to_string();
         n.case_sensitive = false;
         n.replace_all();
-        assert_eq!(n.content.text().trim_end(), "hi hi hi");
+        assert_eq!(n.active_doc().content.text().trim_end(), "hi hi hi");
     }
 
     #[test]
@@ -1125,7 +1179,7 @@ mod tests {
         n.find_query = String::new();
         n.replace_query = "hi".to_string();
         n.replace_all();
-        assert!(!n.is_modified);
+        assert!(!n.active_doc().is_modified);
     }
 
     #[test]
@@ -1135,7 +1189,7 @@ mod tests {
         n.replace_query = "hi".to_string();
         n.case_sensitive = true;
         n.replace_all();
-        assert!(!n.is_modified);
+        assert!(!n.active_doc().is_modified);
     }
 
     // ============================
@@ -1152,70 +1206,109 @@ mod tests {
                 cursor_col: 0,
             });
         }
-        assert_eq!(n.undo_stack.len(), MAX_UNDO_HISTORY);
+        assert_eq!(n.active_doc().undo_stack.len(), MAX_UNDO_HISTORY);
     }
 
     #[test]
     fn undo_restores_previous_text() {
         let mut n = notepad_with("original");
         n.save_snapshot();
-        n.content = text_editor::Content::with_text("modified");
+        n.active_doc_mut().content = text_editor::Content::with_text("modified");
         n.undo();
-        assert_eq!(n.content.text().trim_end(), "original");
+        assert_eq!(n.active_doc().content.text().trim_end(), "original");
     }
 
     #[test]
     fn redo_after_undo() {
         let mut n = notepad_with("original");
         n.save_snapshot();
-        n.content = text_editor::Content::with_text("modified");
-        n.is_modified = true;
-        // Save current state to redo stack via undo
+        n.active_doc_mut().content = text_editor::Content::with_text("modified");
+        n.active_doc_mut().is_modified = true;
         n.undo();
-        assert_eq!(n.content.text().trim_end(), "original");
+        assert_eq!(n.active_doc().content.text().trim_end(), "original");
         n.redo();
-        assert_eq!(n.content.text().trim_end(), "modified");
+        assert_eq!(n.active_doc().content.text().trim_end(), "modified");
     }
 
     #[test]
     fn undo_on_empty_stack_is_noop() {
         let mut n = notepad_with("hello");
-        n.undo(); // should not panic
-        assert_eq!(n.content.text().trim_end(), "hello");
+        n.undo();
+        assert_eq!(n.active_doc().content.text().trim_end(), "hello");
     }
 
     #[test]
     fn redo_on_empty_stack_is_noop() {
         let mut n = notepad_with("hello");
-        n.redo(); // should not panic
-        assert_eq!(n.content.text().trim_end(), "hello");
+        n.redo();
+        assert_eq!(n.active_doc().content.text().trim_end(), "hello");
     }
 
     // ============================
-    // reset_document
+    // Tab operations
     // ============================
 
     #[test]
-    fn reset_document_clears_state() {
-        let mut n = notepad_with("some content");
-        n.file_path = Some(PathBuf::from("/tmp/test.txt"));
-        n.is_modified = true;
-        n.save_snapshot();
-        n.undo_stack.push(TextSnapshot {
-            text: "old".to_string(),
-            cursor_line: 0,
-            cursor_col: 0,
-        });
-        n.reset_document();
+    fn new_tab_adds_document() {
+        let mut n = Notepad::test_default();
+        assert_eq!(n.tabs.len(), 1);
+        n.tabs.push(Document::default());
+        n.active_tab = n.tabs.len() - 1;
+        assert_eq!(n.tabs.len(), 2);
+        assert_eq!(n.active_tab, 1);
+    }
 
-        assert!(n.file_path.is_none());
-        assert!(!n.is_modified);
-        assert!(n.undo_stack.is_empty());
-        assert!(n.redo_stack.is_empty());
-        assert_eq!(n.scroll_offset, 0.0);
-        assert_eq!(
-            n.status_message,
-            Some("Nouveau document".to_string())
-        );
+    #[test]
+    fn close_tab_removes_document() {
+        let mut n = Notepad::test_default();
+        n.tabs.push(Document::default());
+        n.tabs.push(Document::default());
+        assert_eq!(n.tabs.len(), 3);
+        n.remove_tab(1);
+        assert_eq!(n.tabs.len(), 2);
+    }
+
+    #[test]
+    fn close_last_tab_creates_new_empty() {
+        let mut n = Notepad::test_default();
+        n.active_doc_mut().is_modified = false;
+        n.remove_tab(0);
+        assert_eq!(n.tabs.len(), 1);
+        assert_eq!(n.active_tab, 0);
+        assert!(!n.active_doc().is_modified);
+    }
+
+    #[test]
+    fn switch_tab_changes_active() {
+        let mut n = Notepad::test_default();
+        n.tabs.push(Document::default());
+        n.active_tab = 0;
+        n.active_tab = 1;
+        assert_eq!(n.active_tab, 1);
+    }
+
+    #[test]
+    fn close_tab_adjusts_active_index() {
+        let mut n = Notepad::test_default();
+        n.tabs.push(Document::default());
+        n.tabs.push(Document::default());
+        n.active_tab = 2;
+        n.remove_tab(0);
+        assert_eq!(n.active_tab, 1); // shifted down
+    }
+
+    // ============================
+    // reset via remove_tab
+    // ============================
+
+    #[test]
+    fn remove_tab_resets_when_last() {
+        let mut n = notepad_with("some content");
+        n.active_doc_mut().file_path = Some(PathBuf::from("/tmp/test.txt"));
+        n.active_doc_mut().is_modified = true;
+        n.remove_tab(0);
+        assert!(n.active_doc().file_path.is_none());
+        assert!(!n.active_doc().is_modified);
+        assert!(n.active_doc().undo_stack.is_empty());
     }
 }

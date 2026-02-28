@@ -6,7 +6,7 @@ use iced::{Element, Length, Padding, Theme};
 
 use crate::app::{
     find_input_id, goto_input_id, replace_input_id, EditMsg, FileMsg, Menu, MenuMsg, Message,
-    Notepad, SearchMsg, ViewMsg, MENU_BAR_HEIGHT, MENU_ITEM_WIDTH,
+    Notepad, SearchMsg, ViewMsg, MENU_BAR_HEIGHT, MENU_ITEM_WIDTH, TAB_BAR_HEIGHT,
 };
 use crate::DEFAULT_FONT_SIZE;
 
@@ -148,7 +148,6 @@ impl Notepad {
         let theme = self.theme();
         let palette = theme.extended_palette();
 
-        // Extract colors as owned values to avoid lifetime issues with closures
         let bg_weak = palette.background.weak.color;
         let bg_strong = palette.background.strong.color;
         let bg_base = palette.background.base.color;
@@ -156,6 +155,7 @@ impl Notepad {
         let primary_weak = palette.primary.weak.color;
         let shortcut_color = iced::Color { a: 0.5, ..bg_text };
 
+        let doc = self.active_doc();
         let mut layout = Column::new();
 
         // --- Menu bar ---
@@ -183,6 +183,65 @@ impl Notepad {
             .width(Length::Fill)
             .height(MENU_BAR_HEIGHT);
         layout = layout.push(menu_bar);
+
+        // --- Tab bar ---
+        let mut tab_row = Row::new().spacing(0);
+        for (i, tab_doc) in self.tabs.iter().enumerate() {
+            let is_active_tab = i == self.active_tab;
+            let label = tab_doc.title_label();
+
+            // Tab button with close X
+            let tab_content = Row::new()
+                .push(text(label).size(11))
+                .push(
+                    button(text("×").size(11))
+                        .on_press(Message::File(FileMsg::CloseTab(i)))
+                        .padding(Padding {
+                            top: 0.0,
+                            bottom: 0.0,
+                            left: 6.0,
+                            right: 0.0,
+                        })
+                        .style(button::text),
+                )
+                .spacing(2)
+                .align_y(iced::Alignment::Center);
+
+            let tab_btn = button(tab_content)
+                .on_press(Message::File(FileMsg::SwitchTab(i)))
+                .padding(Padding {
+                    top: 6.0,
+                    bottom: 6.0,
+                    left: 10.0,
+                    right: 6.0,
+                })
+                .style(if is_active_tab {
+                    button::primary
+                } else {
+                    button::text
+                });
+
+            tab_row = tab_row.push(tab_btn);
+        }
+
+        // "+" button for new tab
+        tab_row = tab_row.push(
+            button(text("+").size(12))
+                .on_press(Message::File(FileMsg::NewTab))
+                .padding(Padding {
+                    top: 6.0,
+                    bottom: 6.0,
+                    left: 8.0,
+                    right: 8.0,
+                })
+                .style(button::text),
+        );
+
+        let tab_bar = container(tab_row)
+            .style(bar_style(bg_weak, bg_strong))
+            .width(Length::Fill)
+            .height(TAB_BAR_HEIGHT);
+        layout = layout.push(tab_bar);
 
         // --- Find bar ---
         if self.show_find {
@@ -293,7 +352,7 @@ impl Notepad {
         }
 
         // --- Editor with line numbers ---
-        let total_lines = self.content.line_count();
+        let total_lines = doc.content.line_count();
         let digits = total_lines.max(1).to_string().len().max(3);
         let gutter_width = digits as f32 * self.font_size * 0.6 + 20.0;
         let line_number_color = iced::Color { a: 0.45, ..bg_text };
@@ -335,7 +394,7 @@ impl Notepad {
             .style(bar_style(bg_weak, bg_strong))
             .height(Length::Fill);
 
-        let editor = text_editor(&self.content)
+        let editor = text_editor(&doc.content)
             .on_action(Message::EditorAction)
             .padding(10)
             .size(self.font_size)
@@ -366,9 +425,9 @@ impl Notepad {
         layout = layout.push(editor_row);
 
         // --- Status bar ---
-        let (line, col) = self.content.cursor_position();
-        let line_count = self.content.line_count();
-        let content_text = self.content.text();
+        let (line, col) = doc.content.cursor_position();
+        let line_count = doc.content.line_count();
+        let content_text = doc.content.text();
         let char_count = content_text.len();
         let word_count = content_text.split_whitespace().count();
         let zoom_pct = (self.font_size / DEFAULT_FONT_SIZE * 100.0) as u32;
@@ -379,7 +438,7 @@ impl Notepad {
         .spacing(0)
         .padding(6);
 
-        if let Some(msg) = &self.status_message {
+        if let Some(msg) = &doc.status_message {
             status_row = status_row
                 .push(container(text("|").size(11)).padding([0, 8]))
                 .push(text(msg.clone()).size(11).color(palette.success.base.color));
@@ -395,7 +454,7 @@ impl Notepad {
             .push(container(text("|").size(11)).padding([0, 8]))
             .push(text(format!("Zoom: {}%", zoom_pct)).size(11))
             .push(container(text("|").size(11)).padding([0, 8]))
-            .push(text(self.line_ending.label()).size(11))
+            .push(text(doc.line_ending.label()).size(11))
             .push(container(text("|").size(11)).padding([0, 8]))
             .push(text("UTF-8").size(11));
 
@@ -407,7 +466,6 @@ impl Notepad {
         // --- Stack overlays ---
         let mut layers = Stack::new().push(layout);
 
-        // Click-catcher to close menus when clicking outside
         if self.active_menu.is_some() || self.show_context_menu {
             layers = layers.push(
                 mouse_area(Space::new(Length::Fill, Length::Fill))
@@ -420,9 +478,9 @@ impl Notepad {
             let items: Vec<Element<'_, Message>> = match menu {
                 Menu::File => vec![
                     menu_item_widget(
-                        "Nouveau",
+                        "Nouvel onglet",
                         "Ctrl+N",
-                        Message::File(FileMsg::New),
+                        Message::File(FileMsg::NewTab),
                         shortcut_color,
                     ),
                     menu_item_widget(
@@ -441,6 +499,12 @@ impl Notepad {
                         "Enregistrer sous...",
                         "Ctrl+Shift+S",
                         Message::File(FileMsg::SaveAs),
+                        shortcut_color,
+                    ),
+                    menu_item_widget(
+                        "Fermer l'onglet",
+                        "Ctrl+W",
+                        Message::File(FileMsg::CloseTab(self.active_tab)),
                         shortcut_color,
                     ),
                 ],
@@ -544,9 +608,12 @@ impl Notepad {
             };
 
             let item_count = items.len();
-            let dropdown =
-                container(Column::with_children(items).spacing(MENU_ITEM_SPACING).padding(MENU_CONTAINER_PADDING))
-                    .style(popup_style(bg_weak, bg_strong));
+            let dropdown = container(
+                Column::with_children(items)
+                    .spacing(MENU_ITEM_SPACING)
+                    .padding(MENU_CONTAINER_PADDING),
+            )
+            .style(popup_style(bg_weak, bg_strong));
 
             let left_offset = menu_left_offset(menu);
             let (popup_w, popup_h) = menu_popup_size(item_count);
@@ -591,9 +658,12 @@ impl Notepad {
             ];
 
             let ctx_count = ctx_items.len();
-            let ctx_menu =
-                container(Column::with_children(ctx_items).spacing(MENU_ITEM_SPACING).padding(MENU_CONTAINER_PADDING))
-                    .style(popup_style(bg_weak, bg_strong));
+            let ctx_menu = container(
+                Column::with_children(ctx_items)
+                    .spacing(MENU_ITEM_SPACING)
+                    .padding(MENU_CONTAINER_PADDING),
+            )
+            .style(popup_style(bg_weak, bg_strong));
 
             let (popup_w, popup_h) = menu_popup_size(ctx_count);
             let (ctx_x, ctx_y) = clamp_popup_position(
@@ -634,7 +704,6 @@ mod tests {
 
     #[test]
     fn menu_left_offset_view_after_three_labels() {
-        // Accumulate widths of "Fichier", "Edition", "Recherche"
         let mut expected = 0.0;
         for label in ["Fichier", "Edition", "Recherche"] {
             let w = label.chars().count() as f32 * MENU_FONT_SIZE * 0.6;
@@ -684,15 +753,15 @@ mod tests {
     #[test]
     fn clamp_overflow_right() {
         let (x, y) = clamp_popup_position(750.0, 20.0, 100.0, 50.0, 800.0, 600.0);
-        assert_eq!(x, 700.0); // 800 - 100
-        assert_eq!(y, 20.0); // unchanged
+        assert_eq!(x, 700.0);
+        assert_eq!(y, 20.0);
     }
 
     #[test]
     fn clamp_overflow_bottom() {
         let (x, y) = clamp_popup_position(10.0, 580.0, 100.0, 50.0, 800.0, 600.0);
-        assert_eq!(x, 10.0); // unchanged
-        assert_eq!(y, 550.0); // 600 - 50
+        assert_eq!(x, 10.0);
+        assert_eq!(y, 550.0);
     }
 
     #[test]
