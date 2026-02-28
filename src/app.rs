@@ -93,6 +93,16 @@ impl Document {
         }
     }
 
+    pub fn encode_content(&self) -> Vec<u8> {
+        let content = self.content.text();
+        if self.encoding != encoding_rs::UTF_8 {
+            let (encoded, _, _) = self.encoding.encode(&content);
+            encoded.into_owned()
+        } else {
+            content.into_bytes()
+        }
+    }
+
     pub fn update_stats_cache(&mut self) {
         let text = self.content.text();
         self.cached_char_count = text.len();

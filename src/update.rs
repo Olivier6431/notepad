@@ -199,14 +199,7 @@ impl Notepad {
                 for doc in &mut self.tabs {
                     if doc.is_modified {
                         if let Some(path) = doc.file_path.clone() {
-                            let content = doc.content.text();
-                            let bytes: Vec<u8> = if doc.encoding != encoding_rs::UTF_8 {
-                                let (encoded, _, _) = doc.encoding.encode(&content);
-                                encoded.into_owned()
-                            } else {
-                                content.into_bytes()
-                            };
-                            if std::fs::write(&path, bytes).is_ok() {
+                            if std::fs::write(&path, doc.encode_content()).is_ok() {
                                 doc.is_modified = false;
                                 let name = path
                                     .file_name()
@@ -693,13 +686,7 @@ impl Notepad {
 
     fn save_to_file(&mut self, path: PathBuf) {
         let doc = self.active_doc_mut();
-        let content = doc.content.text();
-        let bytes: Vec<u8> = if doc.encoding != encoding_rs::UTF_8 {
-            let (encoded, _, _) = doc.encoding.encode(&content);
-            encoded.into_owned()
-        } else {
-            content.into_bytes()
-        };
+        let bytes = doc.encode_content();
         if let Err(e) = std::fs::write(&path, bytes) {
             rfd::MessageDialog::new()
                 .set_title("Erreur")
