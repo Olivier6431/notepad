@@ -101,7 +101,7 @@ const MENU_CONTAINER_PADDING: f32 = 4.0;
 
 fn menu_popup_size(item_count: usize) -> (f32, f32) {
     let height = item_count as f32 * MENU_ITEM_HEIGHT
-        + (item_count.saturating_sub(1)) as f32 * MENU_ITEM_SPACING
+        + item_count.saturating_sub(1) as f32 * MENU_ITEM_SPACING
         + MENU_CONTAINER_PADDING * 2.0;
     let width = MENU_ITEM_WIDTH + MENU_CONTAINER_PADDING * 2.0;
     (width, height)
@@ -367,13 +367,13 @@ impl Notepad {
 
         let top_spacer_height = visible_start as f32 * line_height;
         let bottom_spacer_height =
-            (total_lines.saturating_sub(visible_end)) as f32 * line_height;
+            total_lines.saturating_sub(visible_end) as f32 * line_height;
 
         let mut line_nums = Column::new();
         if top_spacer_height > 0.0 {
             line_nums = line_nums.push(Space::new(gutter_width, top_spacer_height));
         }
-        for i in (visible_start + 1)..=(visible_end) {
+        for i in (visible_start + 1)..=visible_end {
             line_nums = line_nums.push(
                 container(
                     text(i.to_string())
