@@ -23,5 +23,6 @@ fn main() -> iced::Result {
         .theme(Notepad::theme)
         .subscription(Notepad::subscription)
         .window_size(iced::Size::new(prefs.window_width, prefs.window_height))
+        .exit_on_close_request(false)
         .run()
 }

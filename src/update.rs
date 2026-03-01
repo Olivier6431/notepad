@@ -11,7 +11,7 @@ use crate::app::{
     Notepad, SearchMsg, SettingsMsg, TextSnapshot, ViewMsg, FILE_SIZE_LIMIT_MB, FILE_SIZE_WARN_MB,
     LARGE_FILE_UNDO_HISTORY, MAX_UNDO_HISTORY, UNDO_BATCH_TIMEOUT_MS,
 };
-use crate::preferences::UserPreferences;
+use crate::preferences::{SessionData, SessionTab, UserPreferences};
 use crate::{DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, ZOOM_STEP};
 
 fn format_local_datetime(unix_secs: u64) -> String {
@@ -241,6 +241,7 @@ impl Notepad {
                 Task::none()
             }
             FileMsg::CloseRequested(id) => {
+                self.save_session();
                 let any_modified = self.tabs.iter().any(|doc| doc.is_modified);
                 if any_modified {
                     Self::confirm_discard(
@@ -255,6 +256,7 @@ impl Notepad {
             }
             FileMsg::ConfirmCloseResult(confirmed, id) => {
                 if confirmed {
+                    self.save_session();
                     iced::window::close(id)
                 } else {
                     Task::none()
@@ -620,6 +622,13 @@ impl Notepad {
                 self.word_wrap = v;
                 self.save_preferences();
             }
+            SettingsMsg::SetRestoreSession(v) => {
+                self.restore_session = v;
+                self.save_preferences();
+                if !v {
+                    SessionData::clear();
+                }
+            }
         }
         Task::none()
     }
@@ -812,8 +821,67 @@ impl Notepad {
             word_wrap: self.word_wrap,
             window_width: self.window_width,
             window_height: self.window_height,
+            restore_session: self.restore_session,
         }
         .save();
+    }
+
+    fn save_session(&self) {
+        if !self.restore_session {
+            return;
+        }
+        let tabs: Vec<SessionTab> = self
+            .tabs
+            .iter()
+            .map(|doc| SessionTab {
+                file_path: doc.file_path.clone(),
+                unsaved_content: if doc.file_path.is_none() || doc.is_modified {
+                    Some(doc.content.text())
+                } else {
+                    None
+                },
+                is_modified: doc.is_modified,
+            })
+            .collect();
+        SessionData {
+            tabs,
+            active_tab: self.active_tab,
+        }
+        .save();
+    }
+
+    pub fn load_from_file_silent(&mut self, path: PathBuf) {
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+
+        let file_size_mb = bytes.len() as u64 / (1024 * 1024);
+        let (content_text, detected_encoding) = Self::decode_bytes(&bytes);
+
+        let doc = self.active_doc_mut();
+        doc.line_ending = LineEnding::detect(&content_text);
+        doc.encoding = detected_encoding;
+        let mut content = text_editor::Content::with_text(&content_text);
+        content.perform(text_editor::Action::Move(
+            text_editor::Motion::DocumentEnd,
+        ));
+        doc.content = content;
+        doc.last_file_modified = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+        doc.file_path = Some(path);
+        doc.is_modified = false;
+        doc.scroll_offset = 0.0;
+        doc.undo_stack.clear();
+        doc.redo_stack.clear();
+        doc.last_edit_time = None;
+
+        if file_size_mb > 10 {
+            doc.max_undo = LARGE_FILE_UNDO_HISTORY;
+        } else {
+            doc.max_undo = MAX_UNDO_HISTORY;
+        }
+
+        doc.update_stats_cache();
     }
 
     // --- Undo/Redo ---

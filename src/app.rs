@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::preferences::UserPreferences;
+use crate::preferences::{SessionData, UserPreferences};
 use crate::{
     DEFAULT_FONT_SIZE, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, MAX_FONT_SIZE, MIN_FONT_SIZE,
 };
@@ -192,6 +192,7 @@ pub enum SettingsMsg {
     SetDarkMode(bool),
     SetFontSize(f32),
     SetWordWrap(bool),
+    SetRestoreSession(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -254,6 +255,7 @@ pub struct Notepad {
     pub word_wrap: bool,
     pub window_width: f32,
     pub window_height: f32,
+    pub restore_session: bool,
 
     // Find & Replace (shared across tabs)
     pub show_find: bool,
@@ -292,6 +294,7 @@ impl Default for Notepad {
             word_wrap: true,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
+            restore_session: true,
             show_find: false,
             show_replace: false,
             find_query: String::new(),
@@ -319,15 +322,68 @@ impl Notepad {
 
     pub fn new() -> (Self, Task<Message>) {
         let prefs = UserPreferences::load();
-        let notepad = Self {
+        let mut notepad = Self {
             font_size: prefs.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE),
             dark_mode: prefs.dark_mode,
             word_wrap: prefs.word_wrap,
             window_width: prefs.window_width,
             window_height: prefs.window_height,
+            restore_session: prefs.restore_session,
             ..Self::default()
         };
+
+        if prefs.restore_session {
+            let session = SessionData::load();
+            if !session.tabs.is_empty() {
+                notepad.restore_session_data(&session);
+                SessionData::clear();
+            }
+        }
+
         (notepad, Task::none())
+    }
+
+    fn restore_session_data(&mut self, session: &SessionData) {
+        let mut restored = Vec::new();
+
+        for tab in &session.tabs {
+            if let Some(ref path) = tab.file_path {
+                if path.exists() {
+                    // File tab — load from disk
+                    self.tabs.push(Document::default());
+                    self.active_tab = self.tabs.len() - 1;
+                    self.load_from_file_silent(path.clone());
+                    // If saved session had unsaved changes, overlay the content
+                    if tab.is_modified {
+                        if let Some(ref content) = tab.unsaved_content {
+                            let doc = self.active_doc_mut();
+                            doc.content = text_editor::Content::with_text(content);
+                            doc.is_modified = true;
+                            doc.update_stats_cache();
+                        }
+                    }
+                    restored.push(self.tabs.len() - 1);
+                }
+            } else if let Some(ref content) = tab.unsaved_content {
+                // "Sans titre" tab with unsaved content
+                let mut doc = Document {
+                    content: text_editor::Content::with_text(content),
+                    is_modified: true,
+                    ..Document::default()
+                };
+                doc.update_stats_cache();
+                self.tabs.push(doc);
+                restored.push(self.tabs.len() - 1);
+            }
+        }
+
+        if !restored.is_empty() {
+            // Remove the initial empty default tab
+            self.tabs.remove(0);
+            self.active_tab = session
+                .active_tab
+                .min(self.tabs.len().saturating_sub(1));
+        }
     }
 
     pub fn active_doc(&self) -> &Document {

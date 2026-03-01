@@ -875,6 +875,29 @@ impl Notepad {
                 .align_y(iced::Alignment::Center)
                 .width(Length::Fill);
 
+            // Session restore toggle
+            let session_btn_label = if self.restore_session {
+                "Activé"
+            } else {
+                "Désactivé"
+            };
+            let session_row = Row::new()
+                .push(
+                    text("Restaurer la session")
+                        .size(14)
+                        .width(Length::FillPortion(1)),
+                )
+                .push(
+                    button(text(session_btn_label).size(13))
+                        .on_press(Message::Settings(SettingsMsg::SetRestoreSession(
+                            !self.restore_session,
+                        )))
+                        .style(button::secondary)
+                        .padding(Padding::from([4, 16])),
+                )
+                .align_y(iced::Alignment::Center)
+                .width(Length::Fill);
+
             let modal_content = container(
                 Column::new()
                     .push(title_row)
@@ -884,6 +907,8 @@ impl Notepad {
                     .push(font_row)
                     .push(Space::new().height(12))
                     .push(wrap_row)
+                    .push(Space::new().height(12))
+                    .push(session_row)
                     .width(350),
             )
             .padding(24)
