@@ -471,11 +471,24 @@ impl Notepad {
                 Task::none()
             }
             SearchMsg::GoToLineSubmit => {
-                if let Ok(line_num) = self.goto_input.parse::<usize>() {
-                    let target = line_num.saturating_sub(1);
-                    self.navigate_to(target, 0);
-                    self.show_goto = false;
-                    return self.sync_line_numbers();
+                let line_count = self.active_doc().content.line_count();
+                match self.goto_input.parse::<usize>() {
+                    Ok(n) if n >= 1 && n <= line_count => {
+                        self.navigate_to(n - 1, 0);
+                        self.show_goto = false;
+                        self.active_doc_mut().status_message = None;
+                        return self.sync_line_numbers();
+                    }
+                    Ok(_) => {
+                        self.active_doc_mut().status_message = Some(format!(
+                            "Numéro de ligne invalide (1–{})",
+                            line_count
+                        ));
+                    }
+                    Err(_) => {
+                        self.active_doc_mut().status_message =
+                            Some("Entrez un numéro de ligne valide".to_string());
+                    }
                 }
                 Task::none()
             }
