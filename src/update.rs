@@ -1028,7 +1028,7 @@ impl Notepad {
         self.select_chars(match_chars);
     }
 
-    fn build_regex(&self) -> Option<regex::Regex> {
+    fn build_regex(&mut self) -> Option<regex::Regex> {
         let pattern = if self.use_regex {
             self.find_query.clone()
         } else {
@@ -1039,16 +1039,26 @@ impl Notepad {
         } else {
             format!("(?i){pattern}")
         };
-        regex::Regex::new(&full).ok()
+        match regex::Regex::new(&full) {
+            Ok(re) => {
+                self.active_doc_mut().status_message = None;
+                Some(re)
+            }
+            Err(e) => {
+                self.active_doc_mut().status_message =
+                    Some(format!("Regex invalide : {e}"));
+                None
+            }
+        }
     }
 
-    fn find_in(&self, haystack: &str, from: usize) -> Option<(usize, usize)> {
+    fn find_in(&mut self, haystack: &str, from: usize) -> Option<(usize, usize)> {
         let re = self.build_regex()?;
         re.find(&haystack[from..])
             .map(|m| (from + m.start(), m.len()))
     }
 
-    fn rfind_in(&self, haystack: &str, until: usize) -> Option<(usize, usize)> {
+    fn rfind_in(&mut self, haystack: &str, until: usize) -> Option<(usize, usize)> {
         let re = self.build_regex()?;
         let mut last = None;
         for m in re.find_iter(&haystack[..until]) {
