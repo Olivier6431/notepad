@@ -523,8 +523,16 @@ impl Notepad {
         let word_count = doc.cached_word_count;
         let zoom_pct = (self.font_size / DEFAULT_FONT_SIZE * 100.0) as u32;
 
+        let selection_len = doc.content.selection().map(|s| s.chars().count());
+
+        let cursor_text = if let Some(sel_len) = selection_len {
+            format!("Ln {}, Col {} ({} sélectionnés)", line + 1, col + 1, sel_len)
+        } else {
+            format!("Ln {}, Col {}", line + 1, col + 1)
+        };
+
         let mut status_row = row![
-            text(format!("Ln {}, Col {}", line + 1, col + 1)).size(11),
+            text(cursor_text).size(11),
         ]
         .spacing(0)
         .padding(6);
