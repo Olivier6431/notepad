@@ -7,6 +7,7 @@ use crate::{DEFAULT_FONT_SIZE, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH};
 pub struct UserPreferences {
     pub font_size: f32,
     pub dark_mode: bool,
+    pub word_wrap: bool,
     pub window_width: f32,
     pub window_height: f32,
 }
@@ -16,6 +17,7 @@ impl Default for UserPreferences {
         Self {
             font_size: DEFAULT_FONT_SIZE,
             dark_mode: false,
+            word_wrap: true,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
         }
@@ -54,6 +56,7 @@ mod tests {
         let prefs = UserPreferences::default();
         assert_eq!(prefs.font_size, DEFAULT_FONT_SIZE);
         assert!(!prefs.dark_mode);
+        assert!(prefs.word_wrap);
         assert_eq!(prefs.window_width, DEFAULT_WINDOW_WIDTH);
         assert_eq!(prefs.window_height, DEFAULT_WINDOW_HEIGHT);
     }
@@ -63,6 +66,7 @@ mod tests {
         let prefs = UserPreferences {
             font_size: 18.0,
             dark_mode: true,
+            word_wrap: false,
             window_width: 1024.0,
             window_height: 768.0,
         };
@@ -70,6 +74,7 @@ mod tests {
         let restored: UserPreferences = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.font_size, 18.0);
         assert!(restored.dark_mode);
+        assert!(!restored.word_wrap);
         assert_eq!(restored.window_width, 1024.0);
         assert_eq!(restored.window_height, 768.0);
     }

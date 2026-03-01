@@ -177,6 +177,15 @@ pub enum ViewMsg {
 }
 
 #[derive(Debug, Clone)]
+pub enum SettingsMsg {
+    Open,
+    Close,
+    SetDarkMode(bool),
+    SetFontSize(f32),
+    SetWordWrap(bool),
+}
+
+#[derive(Debug, Clone)]
 pub enum MenuMsg {
     Toggle(Menu),
     Hover(Menu),
@@ -192,6 +201,7 @@ pub enum Message {
     Edit(EditMsg),
     Search(SearchMsg),
     View(ViewMsg),
+    Settings(SettingsMsg),
     Menu(MenuMsg),
 }
 
@@ -251,6 +261,9 @@ pub struct Notepad {
     // Modifier tracking
     pub ctrl_pressed: bool,
 
+    // Settings modal
+    pub show_settings: bool,
+
     // Menu state
     pub active_menu: Option<Menu>,
     pub show_context_menu: bool,
@@ -279,6 +292,7 @@ impl Default for Notepad {
             show_goto: false,
             goto_input: String::new(),
             ctrl_pressed: false,
+            show_settings: false,
             active_menu: None,
             show_context_menu: false,
             mouse_position: iced::Point::ORIGIN,
@@ -298,6 +312,7 @@ impl Notepad {
         let notepad = Self {
             font_size: prefs.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE),
             dark_mode: prefs.dark_mode,
+            word_wrap: prefs.word_wrap,
             window_width: prefs.window_width,
             window_height: prefs.window_height,
             ..Self::default()

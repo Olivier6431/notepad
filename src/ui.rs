@@ -6,7 +6,7 @@ use iced::{Element, Length, Padding, Theme};
 
 use crate::app::{
     find_input_id, goto_input_id, replace_input_id, EditMsg, FileMsg, Menu, MenuMsg, Message,
-    Notepad, SearchMsg, ViewMsg, MENU_BAR_HEIGHT, MENU_ITEM_WIDTH, TAB_BAR_HEIGHT,
+    Notepad, SearchMsg, SettingsMsg, ViewMsg, MENU_BAR_HEIGHT, MENU_ITEM_WIDTH, TAB_BAR_HEIGHT,
 };
 use crate::DEFAULT_FONT_SIZE;
 
@@ -635,6 +635,12 @@ impl Notepad {
                             Message::View(ViewMsg::ZoomReset),
                             shortcut_color,
                         ),
+                        menu_item_widget(
+                            "Paramètres",
+                            "",
+                            Message::Settings(SettingsMsg::Open),
+                            shortcut_color,
+                        ),
                     ]
                 }
             };
@@ -707,6 +713,119 @@ impl Notepad {
                 self.window_height,
             );
             layers = layers.push(overlay_at(ctx_menu, ctx_y, ctx_x));
+        }
+
+        // --- Settings modal ---
+        if self.show_settings {
+            // Semi-transparent backdrop
+            let backdrop = mouse_area(
+                container(Space::new(Length::Fill, Length::Fill)).style(
+                    move |_: &Theme| container::Style {
+                        background: Some(iced::Background::Color(iced::Color {
+                            a: 0.5,
+                            ..iced::Color::BLACK
+                        })),
+                        ..Default::default()
+                    },
+                ),
+            )
+            .on_press(Message::Settings(SettingsMsg::Close));
+            layers = layers.push(backdrop);
+
+            // Modal content
+            let title_row = Row::new()
+                .push(text("Paramètres").size(18))
+                .push(horizontal_space())
+                .push(
+                    button(text("✕").size(14))
+                        .on_press(Message::Settings(SettingsMsg::Close))
+                        .style(button::text),
+                )
+                .align_y(iced::Alignment::Center)
+                .width(Length::Fill);
+
+            // Theme toggle
+            let theme_btn_label = if self.dark_mode { "Sombre" } else { "Clair" };
+            let theme_row = Row::new()
+                .push(text("Thème").size(14).width(Length::FillPortion(1)))
+                .push(
+                    button(text(theme_btn_label).size(13))
+                        .on_press(Message::Settings(SettingsMsg::SetDarkMode(!self.dark_mode)))
+                        .style(button::secondary)
+                        .padding(Padding::from([4, 16])),
+                )
+                .align_y(iced::Alignment::Center)
+                .width(Length::Fill);
+
+            // Font size
+            let font_row = Row::new()
+                .push(text("Taille de police").size(14).width(Length::FillPortion(1)))
+                .push(
+                    Row::new()
+                        .push(
+                            button(text("-").size(13))
+                                .on_press(Message::Settings(SettingsMsg::SetFontSize(
+                                    self.font_size - crate::ZOOM_STEP,
+                                )))
+                                .style(button::secondary)
+                                .padding(Padding::from([4, 10])),
+                        )
+                        .push(
+                            container(text(format!("{}", self.font_size as u32)).size(13))
+                                .padding(Padding::from([4, 12])),
+                        )
+                        .push(
+                            button(text("+").size(13))
+                                .on_press(Message::Settings(SettingsMsg::SetFontSize(
+                                    self.font_size + crate::ZOOM_STEP,
+                                )))
+                                .style(button::secondary)
+                                .padding(Padding::from([4, 10])),
+                        )
+                        .spacing(4)
+                        .align_y(iced::Alignment::Center),
+                )
+                .align_y(iced::Alignment::Center)
+                .width(Length::Fill);
+
+            // Word wrap toggle
+            let wrap_btn_label = if self.word_wrap { "Activé" } else { "Désactivé" };
+            let wrap_row = Row::new()
+                .push(
+                    text("Retour à la ligne")
+                        .size(14)
+                        .width(Length::FillPortion(1)),
+                )
+                .push(
+                    button(text(wrap_btn_label).size(13))
+                        .on_press(Message::Settings(SettingsMsg::SetWordWrap(!self.word_wrap)))
+                        .style(button::secondary)
+                        .padding(Padding::from([4, 16])),
+                )
+                .align_y(iced::Alignment::Center)
+                .width(Length::Fill);
+
+            let modal_content = container(
+                Column::new()
+                    .push(title_row)
+                    .push(Space::new(0, 16))
+                    .push(theme_row)
+                    .push(Space::new(0, 12))
+                    .push(font_row)
+                    .push(Space::new(0, 12))
+                    .push(wrap_row)
+                    .width(350),
+            )
+            .padding(24)
+            .style(popup_style(bg_weak, bg_strong));
+
+            let centered = container(modal_content)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill);
+
+            layers = layers.push(centered);
         }
 
         layers.into()

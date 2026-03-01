@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use crate::app::{
     find_input_id, goto_input_id, Document, EditMsg, FileMsg, LineEnding, MenuMsg, Message,
-    Notepad, SearchMsg, TextSnapshot, ViewMsg, FILE_SIZE_LIMIT_MB, FILE_SIZE_WARN_MB,
+    Notepad, SearchMsg, SettingsMsg, TextSnapshot, ViewMsg, FILE_SIZE_LIMIT_MB, FILE_SIZE_WARN_MB,
     LARGE_FILE_UNDO_HISTORY, MAX_UNDO_HISTORY, UNDO_BATCH_TIMEOUT_MS,
 };
 use crate::preferences::UserPreferences;
@@ -86,7 +86,8 @@ impl Notepad {
             | Message::Search(SearchMsg::FindQueryChanged(_))
             | Message::Search(SearchMsg::ReplaceQueryChanged(_))
             | Message::Search(SearchMsg::GoToInputChanged(_))
-            | Message::File(FileMsg::AutoSave) => {}
+            | Message::File(FileMsg::AutoSave)
+            | Message::Settings(_) => {}
             _ => {
                 self.active_menu = None;
                 self.show_context_menu = false;
@@ -100,6 +101,7 @@ impl Notepad {
             Message::Edit(msg) => self.handle_edit(msg),
             Message::Search(msg) => self.handle_search(msg),
             Message::View(msg) => self.handle_view(msg),
+            Message::Settings(msg) => self.handle_settings(msg),
             Message::Menu(msg) => self.handle_menu(msg),
         }
     }
@@ -512,6 +514,33 @@ impl Notepad {
             }
             ViewMsg::ToggleWordWrap => {
                 self.word_wrap = !self.word_wrap;
+                self.save_preferences();
+            }
+        }
+        Task::none()
+    }
+
+    // --- Settings ---
+
+    fn handle_settings(&mut self, msg: SettingsMsg) -> Task<Message> {
+        match msg {
+            SettingsMsg::Open => {
+                self.show_settings = true;
+            }
+            SettingsMsg::Close => {
+                self.show_settings = false;
+            }
+            SettingsMsg::SetDarkMode(v) => {
+                self.dark_mode = v;
+                self.save_preferences();
+            }
+            SettingsMsg::SetFontSize(v) => {
+                self.font_size = v.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+                self.save_preferences();
+            }
+            SettingsMsg::SetWordWrap(v) => {
+                self.word_wrap = v;
+                self.save_preferences();
             }
         }
         Task::none()
@@ -575,7 +604,9 @@ impl Notepad {
         {
             match (key.as_ref(), modifiers) {
                 (Key::Named(Named::Escape), _) => {
-                    if self.active_menu.is_some() || self.show_context_menu {
+                    if self.show_settings {
+                        self.show_settings = false;
+                    } else if self.active_menu.is_some() || self.show_context_menu {
                         self.active_menu = None;
                         self.show_context_menu = false;
                     } else if self.show_find || self.show_goto {
@@ -656,6 +687,9 @@ impl Notepad {
                 (Key::Character("0"), Modifiers::CTRL) => {
                     return self.handle_view(ViewMsg::ZoomReset);
                 }
+                (Key::Character("z"), Modifiers::ALT) => {
+                    return self.handle_view(ViewMsg::ToggleWordWrap);
+                }
                 _ => {}
             }
         }
@@ -668,6 +702,7 @@ impl Notepad {
         UserPreferences {
             font_size: self.font_size,
             dark_mode: self.dark_mode,
+            word_wrap: self.word_wrap,
             window_width: self.window_width,
             window_height: self.window_height,
         }
