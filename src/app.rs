@@ -173,6 +173,7 @@ pub enum ViewMsg {
     ZoomOut,
     ZoomReset,
     ToggleDarkMode,
+    ToggleWordWrap,
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +231,7 @@ pub struct Notepad {
     pub clipboard: Option<arboard::Clipboard>,
     pub font_size: f32,
     pub dark_mode: bool,
+    pub word_wrap: bool,
     pub window_width: f32,
     pub window_height: f32,
 
@@ -264,6 +266,7 @@ impl Default for Notepad {
             clipboard: arboard::Clipboard::new().ok(),
             font_size: DEFAULT_FONT_SIZE,
             dark_mode: false,
+            word_wrap: true,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             show_find: false,

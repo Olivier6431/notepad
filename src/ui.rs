@@ -416,7 +416,11 @@ impl Notepad {
             .on_action(Message::EditorAction)
             .padding(10)
             .size(self.font_size)
-            .wrapping(text::Wrapping::Word)
+            .wrapping(if self.word_wrap {
+                text::Wrapping::Word
+            } else {
+                text::Wrapping::None
+            })
             .height(Length::Fill)
             .style(move |_theme, _status| text_editor::Style {
                 background: iced::Background::Color(bg_base),
@@ -595,11 +599,22 @@ impl Notepad {
                     } else {
                         "Mode sombre"
                     };
+                    let wrap_label = if self.word_wrap {
+                        "Désactiver le retour à la ligne"
+                    } else {
+                        "Retour à la ligne"
+                    };
                     vec![
                         menu_item_widget(
                             theme_label,
                             "",
                             Message::View(ViewMsg::ToggleDarkMode),
+                            shortcut_color,
+                        ),
+                        menu_item_widget(
+                            wrap_label,
+                            "Alt+Z",
+                            Message::View(ViewMsg::ToggleWordWrap),
                             shortcut_color,
                         ),
                         menu_item_widget(

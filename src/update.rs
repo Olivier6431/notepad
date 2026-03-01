@@ -454,6 +454,9 @@ impl Notepad {
                 self.dark_mode = !self.dark_mode;
                 self.save_preferences();
             }
+            ViewMsg::ToggleWordWrap => {
+                self.word_wrap = !self.word_wrap;
+            }
         }
         Task::none()
     }
