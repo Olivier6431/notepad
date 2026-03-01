@@ -56,6 +56,17 @@ impl Notepad {
     // --- Editor action ---
 
     fn handle_editor_action(&mut self, action: text_editor::Action) -> Task<Message> {
+        // Ctrl+wheel → zoom instead of scroll
+        if self.ctrl_pressed {
+            if let text_editor::Action::Scroll { lines } = &action {
+                return if *lines < 0 {
+                    self.handle_view(ViewMsg::ZoomIn)
+                } else {
+                    self.handle_view(ViewMsg::ZoomOut)
+                };
+            }
+        }
+
         let is_edit = matches!(&action, text_editor::Action::Edit(_));
         let scroll_delta = if let text_editor::Action::Scroll { lines } = &action {
             Some(*lines)
@@ -484,6 +495,11 @@ impl Notepad {
             self.mouse_position = *position;
         }
 
+        // Track modifier keys for Ctrl+wheel zoom
+        if let Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) = &event {
+            self.ctrl_pressed = modifiers.control();
+        }
+
         if let Event::Window(iced::window::Event::Resized(size)) = &event {
             self.window_width = size.width;
             self.window_height = size.height;
@@ -508,6 +524,9 @@ impl Notepad {
                         self.show_replace = false;
                         self.show_goto = false;
                     }
+                }
+                (Key::Named(Named::F3), Modifiers::SHIFT) => {
+                    return self.handle_search(SearchMsg::FindPrevious);
                 }
                 (Key::Named(Named::F3), _) => {
                     return self.handle_search(SearchMsg::FindNext);

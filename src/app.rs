@@ -246,6 +246,9 @@ pub struct Notepad {
     pub show_goto: bool,
     pub goto_input: String,
 
+    // Modifier tracking
+    pub ctrl_pressed: bool,
+
     // Menu state
     pub active_menu: Option<Menu>,
     pub show_context_menu: bool,
@@ -272,6 +275,7 @@ impl Default for Notepad {
             use_regex: false,
             show_goto: false,
             goto_input: String::new(),
+            ctrl_pressed: false,
             active_menu: None,
             show_context_menu: false,
             mouse_position: iced::Point::ORIGIN,
