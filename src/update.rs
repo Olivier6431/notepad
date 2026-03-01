@@ -15,6 +15,57 @@ use crate::preferences::UserPreferences;
 use crate::ui::line_numbers_id;
 use crate::{DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, ZOOM_STEP};
 
+fn format_local_datetime(unix_secs: u64) -> String {
+    // UTC offset for local time — use platform-specific API
+    #[cfg(target_os = "windows")]
+    fn utc_offset_secs() -> i64 {
+        #[repr(C)]
+        struct TimeZoneInformation {
+            bias: i32,
+            _rest: [u8; 168],
+        }
+        extern "system" {
+            fn GetTimeZoneInformation(lpTimeZoneInformation: *mut TimeZoneInformation) -> u32;
+        }
+        let mut tzi = TimeZoneInformation {
+            bias: 0,
+            _rest: [0; 168],
+        };
+        unsafe {
+            GetTimeZoneInformation(&mut tzi);
+        }
+        // Bias is in minutes, west-positive → negate for east-positive
+        -(tzi.bias as i64) * 60
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn utc_offset_secs() -> i64 {
+        0 // Fallback to UTC on non-Windows
+    }
+
+    let local_secs = unix_secs as i64 + utc_offset_secs();
+
+    // Days since epoch → date
+    let mut days = local_secs.div_euclid(86400);
+    let day_secs = local_secs.rem_euclid(86400);
+    let hours = day_secs / 3600;
+    let minutes = (day_secs % 3600) / 60;
+
+    // Civil date from days since 1970-01-01 (Algorithm from Howard Hinnant)
+    days += 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{:02}:{:02} {:02}/{:02}/{:04}", hours, minutes, d, m, y)
+}
+
 fn byte_pos_to_line_col(text: &str, byte_pos: usize) -> (usize, usize) {
     let before = &text[..byte_pos];
     let line = before.matches('\n').count();
@@ -337,8 +388,13 @@ impl Notepad {
                 Task::none()
             }
             EditMsg::InsertDateTime => {
-                let now = chrono::Local::now();
-                let datetime_str = now.format("%H:%M %d/%m/%Y").to_string();
+                let now = std::time::SystemTime::now();
+                let secs = now
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                // Convert to local time using platform API
+                let datetime_str = format_local_datetime(secs);
                 self.save_snapshot();
                 let doc = self.active_doc_mut();
                 doc.content.perform(text_editor::Action::Edit(
