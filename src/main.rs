@@ -18,9 +18,10 @@ pub const ZOOM_STEP: f32 = 2.0;
 
 fn main() -> iced::Result {
     let prefs = UserPreferences::load();
-    iced::application(Notepad::title, Notepad::update, Notepad::view)
+    iced::application(Notepad::new, Notepad::update, Notepad::view)
+        .title(Notepad::title)
         .theme(Notepad::theme)
         .subscription(Notepad::subscription)
         .window_size(iced::Size::new(prefs.window_width, prefs.window_height))
-        .run_with(Notepad::new)
+        .run()
 }

@@ -1,4 +1,4 @@
-use iced::widget::{text_editor, text_input};
+use iced::widget::{text_editor, Id};
 use iced::{Event, Subscription, Task, Theme};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -18,16 +18,16 @@ pub const MENU_BAR_HEIGHT: f32 = 30.0;
 pub const TAB_BAR_HEIGHT: f32 = 32.0;
 pub const MENU_ITEM_WIDTH: f32 = 220.0;
 
-pub fn find_input_id() -> text_input::Id {
-    text_input::Id::new("find_input")
+pub fn find_input_id() -> Id {
+    Id::new("find_input")
 }
 
-pub fn replace_input_id() -> text_input::Id {
-    text_input::Id::new("replace_input")
+pub fn replace_input_id() -> Id {
+    Id::new("replace_input")
 }
 
-pub fn goto_input_id() -> text_input::Id {
-    text_input::Id::new("goto_input")
+pub fn goto_input_id() -> Id {
+    Id::new("goto_input")
 }
 
 pub struct TextSnapshot {
@@ -54,11 +54,15 @@ pub struct Document {
     // Cached stats (updated on edit, not every frame)
     pub cached_word_count: usize,
     pub cached_char_count: usize,
+
+    // File watching
+    pub last_file_modified: Option<std::time::SystemTime>,
+    pub externally_modified: bool,
 }
 
 impl Default for Document {
     fn default() -> Self {
-        let mut content = text_editor::Content::with_text("");
+        let mut content = text_editor::Content::new();
         content.perform(text_editor::Action::Click(iced::Point::new(0.0, 0.0)));
         Self {
             content,
@@ -74,6 +78,8 @@ impl Default for Document {
             status_message: None,
             cached_word_count: 0,
             cached_char_count: 0,
+            last_file_modified: None,
+            externally_modified: false,
         }
     }
 }
@@ -135,6 +141,9 @@ pub enum FileMsg {
     CloseRequested(iced::window::Id),
     ConfirmCloseResult(bool, iced::window::Id),
     AutoSave,
+    CheckExternalChanges,
+    ReloadFile(usize),
+    IgnoreExternalChange(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +212,7 @@ pub enum Message {
     View(ViewMsg),
     Settings(SettingsMsg),
     Menu(MenuMsg),
+    ScrollbarClick(f32),
 }
 
 // --- Line ending ---
@@ -363,6 +373,14 @@ impl Notepad {
             subs.push(
                 iced::time::every(Duration::from_secs(30))
                     .map(|_| Message::File(FileMsg::AutoSave)),
+            );
+        }
+        // File watching: poll every 5 seconds if any tab has a file
+        let any_file = self.tabs.iter().any(|doc| doc.file_path.is_some());
+        if any_file {
+            subs.push(
+                iced::time::every(Duration::from_secs(5))
+                    .map(|_| Message::File(FileMsg::CheckExternalChanges)),
             );
         }
         Subscription::batch(subs)

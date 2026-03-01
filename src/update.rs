@@ -1,6 +1,6 @@
 use iced::keyboard::key::Named;
 use iced::keyboard::{self, Key, Modifiers};
-use iced::widget::{scrollable, text_editor, text_input};
+use iced::widget::{operation, text_editor};
 use iced::{Event, Task};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,7 +12,6 @@ use crate::app::{
     LARGE_FILE_UNDO_HISTORY, MAX_UNDO_HISTORY, UNDO_BATCH_TIMEOUT_MS,
 };
 use crate::preferences::UserPreferences;
-use crate::ui::line_numbers_id;
 use crate::{DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, ZOOM_STEP};
 
 fn format_local_datetime(unix_secs: u64) -> String {
@@ -87,7 +86,9 @@ impl Notepad {
             | Message::Search(SearchMsg::ReplaceQueryChanged(_))
             | Message::Search(SearchMsg::GoToInputChanged(_))
             | Message::File(FileMsg::AutoSave)
-            | Message::Settings(_) => {}
+            | Message::File(FileMsg::CheckExternalChanges)
+            | Message::Settings(_)
+            | Message::ScrollbarClick(_) => {}
             _ => {
                 self.active_menu = None;
                 self.show_context_menu = false;
@@ -103,6 +104,17 @@ impl Notepad {
             Message::View(msg) => self.handle_view(msg),
             Message::Settings(msg) => self.handle_settings(msg),
             Message::Menu(msg) => self.handle_menu(msg),
+            Message::ScrollbarClick(ratio) => {
+                let doc = self.active_doc_mut();
+                let max_offset = doc.content.line_count().saturating_sub(1) as f32;
+                let target = (ratio * max_offset).clamp(0.0, max_offset);
+                let delta = target - doc.scroll_offset;
+                doc.scroll_offset = target;
+                doc.content.perform(text_editor::Action::Scroll {
+                    lines: delta as i32,
+                });
+                Task::none()
+            }
         }
     }
 
@@ -140,10 +152,8 @@ impl Notepad {
             let doc = self.active_doc_mut();
             let max_offset = doc.content.line_count().saturating_sub(1) as f32;
             doc.scroll_offset = (doc.scroll_offset + delta as f32).clamp(0.0, max_offset);
-            self.sync_line_numbers()
-        } else {
-            Task::none()
         }
+        Task::none()
     }
 
     // --- File operations ---
@@ -256,6 +266,9 @@ impl Notepad {
                         if let Some(path) = doc.file_path.clone() {
                             if std::fs::write(&path, doc.encode_content()).is_ok() {
                                 doc.is_modified = false;
+                                doc.last_file_modified = std::fs::metadata(&path)
+                                    .ok()
+                                    .and_then(|m| m.modified().ok());
                                 let name = path
                                     .file_name()
                                     .and_then(|n| n.to_str())
@@ -264,6 +277,58 @@ impl Notepad {
                                 doc.status_message = Some(format!("Enregistré : {name}"));
                             }
                         }
+                    }
+                }
+                Task::none()
+            }
+            FileMsg::CheckExternalChanges => {
+                for i in 0..self.tabs.len() {
+                    let doc = &self.tabs[i];
+                    if doc.externally_modified {
+                        continue;
+                    }
+                    let (path, last_known) = match (&doc.file_path, doc.last_file_modified) {
+                        (Some(p), Some(t)) => (p.clone(), t),
+                        _ => continue,
+                    };
+
+                    let current_modified = match std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                    {
+                        Ok(t) => t,
+                        Err(_) => {
+                            let name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("fichier")
+                                .to_string();
+                            self.tabs[i].status_message =
+                                Some(format!("Fichier supprimé : {name}"));
+                            self.tabs[i].last_file_modified = None;
+                            continue;
+                        }
+                    };
+
+                    if current_modified > last_known {
+                        self.tabs[i].externally_modified = true;
+                    }
+                }
+                Task::none()
+            }
+            FileMsg::ReloadFile(idx) => {
+                if let Some(path) = self.tabs.get(idx).and_then(|d| d.file_path.clone()) {
+                    self.active_tab = idx;
+                    self.tabs[idx].externally_modified = false;
+                    self.load_from_file(path);
+                }
+                Task::none()
+            }
+            FileMsg::IgnoreExternalChange(idx) => {
+                if let Some(doc) = self.tabs.get_mut(idx) {
+                    doc.externally_modified = false;
+                    if let Some(path) = &doc.file_path {
+                        doc.last_file_modified =
+                            std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
                     }
                 }
                 Task::none()
@@ -417,13 +482,13 @@ impl Notepad {
                 self.show_find = true;
                 self.show_replace = false;
                 self.show_goto = false;
-                text_input::focus(find_input_id())
+                operation::focus(find_input_id())
             }
             SearchMsg::OpenReplace => {
                 self.show_find = true;
                 self.show_replace = true;
                 self.show_goto = false;
-                text_input::focus(find_input_id())
+                operation::focus(find_input_id())
             }
             SearchMsg::CloseFind => {
                 self.show_find = false;
@@ -441,11 +506,11 @@ impl Notepad {
             }
             SearchMsg::FindNext => {
                 self.find_next();
-                self.sync_line_numbers()
+                Task::none()
             }
             SearchMsg::FindPrevious => {
                 self.find_previous();
-                self.sync_line_numbers()
+                Task::none()
             }
             SearchMsg::ReplaceOne => {
                 self.replace_one();
@@ -460,7 +525,7 @@ impl Notepad {
                 self.show_find = false;
                 self.show_replace = false;
                 self.goto_input.clear();
-                text_input::focus(goto_input_id())
+                operation::focus(goto_input_id())
             }
             SearchMsg::CloseGoTo => {
                 self.show_goto = false;
@@ -477,7 +542,7 @@ impl Notepad {
                         self.navigate_to(n - 1, 0);
                         self.show_goto = false;
                         self.active_doc_mut().status_message = None;
-                        return self.sync_line_numbers();
+                        return Task::none();
                     }
                     Ok(_) => {
                         self.active_doc_mut().status_message = Some(format!(
@@ -599,6 +664,35 @@ impl Notepad {
         // Track modifier keys for Ctrl+wheel zoom
         if let Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) = &event {
             self.ctrl_pressed = modifiers.control();
+        }
+
+        // Global mouse wheel scroll — works regardless of which widget the mouse is over
+        if let Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) = &event {
+            let lines = match delta {
+                iced::mouse::ScrollDelta::Lines { y, .. } => *y,
+                iced::mouse::ScrollDelta::Pixels { y, .. } => *y / (self.font_size * 1.3),
+            };
+            if lines != 0.0 {
+                let int_lines = if lines > 0.0 {
+                    -(lines.ceil() as i32)
+                } else {
+                    (-lines).ceil() as i32
+                };
+                if self.ctrl_pressed {
+                    return if int_lines < 0 {
+                        self.handle_view(ViewMsg::ZoomIn)
+                    } else {
+                        self.handle_view(ViewMsg::ZoomOut)
+                    };
+                }
+                let doc = self.active_doc_mut();
+                doc.content
+                    .perform(text_editor::Action::Scroll { lines: int_lines });
+                let max_offset = doc.content.line_count().saturating_sub(1) as f32;
+                doc.scroll_offset =
+                    (doc.scroll_offset + int_lines as f32).clamp(0.0, max_offset);
+                return Task::none();
+            }
         }
 
         if let Event::Window(iced::window::Event::Resized(size)) = &event {
@@ -734,7 +828,8 @@ impl Notepad {
 
     fn save_snapshot(&mut self) {
         let doc = self.active_doc_mut();
-        let (cursor_line, cursor_col) = doc.content.cursor_position();
+        let pos = doc.content.cursor().position;
+            let (cursor_line, cursor_col) = (pos.line, pos.column);
         let snapshot = TextSnapshot {
             text: doc.content.text(),
             cursor_line,
@@ -754,7 +849,8 @@ impl Notepad {
             None => true,
         };
         if should_save {
-            let (cursor_line, cursor_col) = doc.content.cursor_position();
+            let pos = doc.content.cursor().position;
+            let (cursor_line, cursor_col) = (pos.line, pos.column);
             let snapshot = TextSnapshot {
                 text: doc.content.text(),
                 cursor_line,
@@ -769,7 +865,8 @@ impl Notepad {
     fn undo(&mut self) {
         let doc = self.active_doc_mut();
         if let Some(snapshot) = doc.undo_stack.pop_back() {
-            let (cursor_line, cursor_col) = doc.content.cursor_position();
+            let pos = doc.content.cursor().position;
+            let (cursor_line, cursor_col) = (pos.line, pos.column);
             doc.redo_stack.push(TextSnapshot {
                 text: doc.content.text(),
                 cursor_line,
@@ -788,7 +885,8 @@ impl Notepad {
     fn redo(&mut self) {
         let doc = self.active_doc_mut();
         if let Some(snapshot) = doc.redo_stack.pop() {
-            let (cursor_line, cursor_col) = doc.content.cursor_position();
+            let pos = doc.content.cursor().position;
+            let (cursor_line, cursor_col) = (pos.line, pos.column);
             doc.undo_stack.push_back(TextSnapshot {
                 text: doc.content.text(),
                 cursor_line,
@@ -803,18 +901,7 @@ impl Notepad {
         }
     }
 
-    // --- Line numbers sync ---
 
-    fn sync_line_numbers(&self) -> Task<Message> {
-        let line_height = self.font_size * 1.3;
-        scrollable::scroll_to(
-            line_numbers_id(),
-            scrollable::AbsoluteOffset {
-                x: 0.0,
-                y: self.active_doc().scroll_offset * line_height,
-            },
-        )
-    }
 
     // --- File I/O ---
 
@@ -834,6 +921,8 @@ impl Notepad {
                 .and_then(|n| n.to_str())
                 .unwrap_or("fichier")
                 .to_string();
+            doc.last_file_modified =
+                std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
             doc.file_path = Some(path);
             doc.is_modified = false;
             doc.status_message = Some(format!("Enregistré : {name}"));
@@ -907,6 +996,7 @@ impl Notepad {
             text_editor::Motion::DocumentEnd,
         ));
         doc.content = content;
+        doc.last_file_modified = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
         doc.file_path = Some(path);
         doc.is_modified = false;
         doc.scroll_offset = 0.0;
@@ -977,7 +1067,7 @@ impl Notepad {
 
     fn navigate_to(&mut self, line: usize, col: usize) {
         let doc = self.active_doc_mut();
-        let (current_line, _) = doc.content.cursor_position();
+        let current_line = doc.content.cursor().position.line;
         let last_line = doc.content.line_count().saturating_sub(1);
         let target_line = line.min(last_line);
 

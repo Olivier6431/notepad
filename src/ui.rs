@@ -1,6 +1,5 @@
 use iced::widget::{
-    button, container, horizontal_space, mouse_area, row, scrollable, text, text_editor,
-    text_input, Column, Row, Space, Stack,
+    button, container, mouse_area, row, text, text_editor, text_input, Column, Row, Space, Stack,
 };
 use iced::{Element, Length, Padding, Theme};
 
@@ -9,10 +8,6 @@ use crate::app::{
     Notepad, SearchMsg, SettingsMsg, ViewMsg, MENU_BAR_HEIGHT, MENU_ITEM_WIDTH, TAB_BAR_HEIGHT,
 };
 use crate::DEFAULT_FONT_SIZE;
-
-pub fn line_numbers_id() -> scrollable::Id {
-    scrollable::Id::new("line_numbers")
-}
 
 const MENU_LABELS: &[(Menu, &str)] = &[
     (Menu::File, "Fichier"),
@@ -44,7 +39,7 @@ fn menu_item_widget<'a>(
 ) -> Element<'a, Message> {
     let mut content = Row::new()
         .push(text(label.to_string()).size(12))
-        .push(horizontal_space())
+        .push(Space::new().width(Length::Fill))
         .spacing(8);
     if !shortcut.is_empty() {
         content = content.push(text(shortcut.to_string()).size(11).color(shortcut_color));
@@ -243,6 +238,35 @@ impl Notepad {
             .height(TAB_BAR_HEIGHT);
         layout = layout.push(tab_bar);
 
+        // --- External modification banner ---
+        if doc.externally_modified {
+            let banner = container(
+                Row::new()
+                    .push(text("Ce fichier a été modifié par un autre programme.").size(12))
+                    .push(Space::new().width(Length::Fill))
+                    .push(
+                        button(text("Recharger").size(11))
+                            .on_press(Message::File(FileMsg::ReloadFile(self.active_tab)))
+                            .style(button::primary)
+                            .padding(Padding::from([3, 12])),
+                    )
+                    .push(Space::new().width(6))
+                    .push(
+                        button(text("Ignorer").size(11))
+                            .on_press(Message::File(FileMsg::IgnoreExternalChange(
+                                self.active_tab,
+                            )))
+                            .style(button::secondary)
+                            .padding(Padding::from([3, 12])),
+                    )
+                    .align_y(iced::Alignment::Center)
+                    .padding(6),
+            )
+            .style(bar_style(palette.primary.weak.color, bg_strong))
+            .width(Length::Fill);
+            layout = layout.push(banner);
+        }
+
         // --- Find bar ---
         if self.show_find {
             let case_style = if self.case_sensitive {
@@ -309,7 +333,7 @@ impl Notepad {
                     );
             }
 
-            find_row = find_row.push(horizontal_space()).push(
+            find_row = find_row.push(Space::new().width(Length::Fill)).push(
                 button(text("X").size(11))
                     .on_press(Message::Search(SearchMsg::CloseFind))
                     .padding(4)
@@ -336,7 +360,7 @@ impl Notepad {
                     .on_press(Message::Search(SearchMsg::GoToLineSubmit))
                     .padding(4)
                     .style(button::secondary),
-                horizontal_space(),
+                Space::new().width(Length::Fill),
                 button(text("X").size(11))
                     .on_press(Message::Search(SearchMsg::CloseGoTo))
                     .padding(4)
@@ -357,23 +381,14 @@ impl Notepad {
         let gutter_width = digits as f32 * self.font_size * 0.6 + 20.0;
         let line_number_color = iced::Color { a: 0.45, ..bg_text };
 
-        // Virtual scrolling: only render visible lines + buffer
         let line_height = self.font_size * 1.3;
         let visible_lines =
             ((self.window_height - MENU_BAR_HEIGHT - TAB_BAR_HEIGHT) / line_height) as usize + 2;
-        let buffer = 40;
-        let visible_start = (doc.scroll_offset as usize).saturating_sub(buffer);
-        let visible_end = (visible_start + visible_lines + buffer * 2).min(total_lines);
-
-        let top_spacer_height = visible_start as f32 * line_height;
-        let bottom_spacer_height =
-            total_lines.saturating_sub(visible_end) as f32 * line_height;
+        let scroll_line = doc.scroll_offset as usize;
+        let visible_end = (scroll_line + visible_lines).min(total_lines);
 
         let mut line_nums = Column::new();
-        if top_spacer_height > 0.0 {
-            line_nums = line_nums.push(Space::new(gutter_width, top_spacer_height));
-        }
-        for i in (visible_start + 1)..=visible_end {
+        for i in (scroll_line + 1)..=visible_end {
             line_nums = line_nums.push(
                 container(
                     text(i.to_string())
@@ -390,11 +405,8 @@ impl Notepad {
                 }),
             );
         }
-        if bottom_spacer_height > 0.0 {
-            line_nums = line_nums.push(Space::new(gutter_width, bottom_spacer_height));
-        }
 
-        let line_gutter = scrollable(
+        let gutter_container = container(
             container(line_nums).padding(Padding {
                 top: 10.0,
                 right: 0.0,
@@ -402,15 +414,9 @@ impl Notepad {
                 left: 0.0,
             }),
         )
-        .id(line_numbers_id())
-        .direction(scrollable::Direction::Vertical(
-            scrollable::Scrollbar::new().width(0).scroller_width(0),
-        ))
-        .height(Length::Fill);
-
-        let gutter_container = container(line_gutter)
-            .style(bar_style(bg_weak, bg_strong))
-            .height(Length::Fill);
+        .style(bar_style(bg_weak, bg_strong))
+        .height(Length::Fill)
+        .clip(true);
 
         let editor = text_editor(&doc.content)
             .on_action(Message::EditorAction)
@@ -429,7 +435,6 @@ impl Notepad {
                     width: 1.0,
                     radius: 0.0.into(),
                 },
-                icon: bg_text,
                 placeholder: iced::Color {
                     a: 0.4,
                     ..bg_text
@@ -440,14 +445,79 @@ impl Notepad {
         let editor_area =
             mouse_area(editor).on_right_press(Message::Menu(MenuMsg::ShowContext));
 
+        // --- Custom scrollbar ---
+        let total_lines = doc.content.line_count();
+        let editor_height = self.window_height - MENU_BAR_HEIGHT - TAB_BAR_HEIGHT - 30.0; // approx status bar
+        let visible_lines_f =
+            (editor_height / (self.font_size * 1.3)).max(1.0);
+        let thumb_ratio = (visible_lines_f / total_lines.max(1) as f32).min(1.0);
+        let scroll_ratio = if total_lines <= 1 {
+            0.0
+        } else {
+            doc.scroll_offset / (total_lines.saturating_sub(1) as f32)
+        };
+
+        let track_color = iced::Color { a: 0.15, ..bg_text };
+        let thumb_color = iced::Color { a: 0.4, ..bg_text };
+
+        // Calculate mouse_position ratio for click handling
+        let bars_height = {
+            let mut h = MENU_BAR_HEIGHT + TAB_BAR_HEIGHT;
+            if doc.externally_modified { h += 30.0; }
+            if self.show_find { h += 36.0; }
+            if self.show_goto { h += 36.0; }
+            h
+        };
+        let mouse_y = self.mouse_position.y;
+        let click_ratio = ((mouse_y - bars_height) / editor_height).clamp(0.0, 1.0);
+
+        let thumb_height_pct = (thumb_ratio * 100.0).max(5.0);
+        let thumb_top_pct = scroll_ratio * (100.0 - thumb_height_pct);
+
+        let scrollbar_track = mouse_area(
+            container(
+                Column::new()
+                    .push(Space::new().height(Length::FillPortion(
+                        (thumb_top_pct * 100.0) as u16,
+                    )))
+                    .push(
+                        container(Space::new().width(8).height(Length::FillPortion(
+                            (thumb_height_pct * 100.0) as u16,
+                        )))
+                        .style(move |_: &Theme| container::Style {
+                            background: Some(iced::Background::Color(thumb_color)),
+                            border: iced::Border {
+                                color: thumb_color,
+                                width: 0.0,
+                                radius: 4.0.into(),
+                            },
+                            ..Default::default()
+                        }),
+                    )
+                    .push(Space::new().height(Length::FillPortion(
+                        ((100.0 - thumb_top_pct - thumb_height_pct) * 100.0).max(0.0) as u16,
+                    )))
+                    .height(Length::Fill),
+            )
+            .style(move |_: &Theme| container::Style {
+                background: Some(iced::Background::Color(track_color)),
+                ..Default::default()
+            })
+            .width(12)
+            .height(Length::Fill),
+        )
+        .on_press(Message::ScrollbarClick(click_ratio));
+
         let editor_row = Row::new()
             .push(gutter_container)
             .push(editor_area)
+            .push(scrollbar_track)
             .height(Length::Fill);
         layout = layout.push(editor_row);
 
         // --- Status bar ---
-        let (line, col) = doc.content.cursor_position();
+        let cursor_pos = doc.content.cursor().position;
+        let (line, col) = (cursor_pos.line, cursor_pos.column);
         let line_count = doc.content.line_count();
         let char_count = doc.cached_char_count;
         let word_count = doc.cached_word_count;
@@ -466,7 +536,7 @@ impl Notepad {
         }
 
         status_row = status_row
-            .push(horizontal_space())
+            .push(Space::new().width(Length::Fill))
             .push(text(format!("{} mots", word_count)).size(11))
             .push(container(text("|").size(11)).padding([0, 8]))
             .push(text(format!("{} caractères", char_count)).size(11))
@@ -489,7 +559,7 @@ impl Notepad {
 
         if self.active_menu.is_some() || self.show_context_menu {
             layers = layers.push(
-                mouse_area(Space::new(Length::Fill, Length::Fill))
+                mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
                     .on_press(Message::Menu(MenuMsg::CloseAll)),
             );
         }
@@ -719,7 +789,7 @@ impl Notepad {
         if self.show_settings {
             // Semi-transparent backdrop
             let backdrop = mouse_area(
-                container(Space::new(Length::Fill, Length::Fill)).style(
+                container(Space::new().width(Length::Fill).height(Length::Fill)).style(
                     move |_: &Theme| container::Style {
                         background: Some(iced::Background::Color(iced::Color {
                             a: 0.5,
@@ -735,7 +805,7 @@ impl Notepad {
             // Modal content
             let title_row = Row::new()
                 .push(text("Paramètres").size(18))
-                .push(horizontal_space())
+                .push(Space::new().width(Length::Fill))
                 .push(
                     button(text("✕").size(14))
                         .on_press(Message::Settings(SettingsMsg::Close))
@@ -808,11 +878,11 @@ impl Notepad {
             let modal_content = container(
                 Column::new()
                     .push(title_row)
-                    .push(Space::new(0, 16))
+                    .push(Space::new().height(16))
                     .push(theme_row)
-                    .push(Space::new(0, 12))
+                    .push(Space::new().height(12))
                     .push(font_row)
-                    .push(Space::new(0, 12))
+                    .push(Space::new().height(12))
                     .push(wrap_row)
                     .width(350),
             )

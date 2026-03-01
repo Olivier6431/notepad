@@ -7,7 +7,7 @@ description = "A simple notepad application built with iced"
 repository = "https://github.com/Olivier6431/notepad"
 
 [dependencies]
-iced = { version = "0.13", features = ["debug", "tokio"] }
+iced = { version = "0.14", features = ["debug", "tokio"] }
 rfd = "0.15"
 arboard = "3"
 serde = { version = "1", features = ["derive"] }
