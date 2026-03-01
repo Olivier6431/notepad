@@ -25,7 +25,7 @@ fn format_local_datetime(unix_secs: u64) -> String {
             _rest: [u8; 168],
         }
         extern "system" {
-            fn GetTimeZoneInformation(lpTimeZoneInformation: *mut TimeZoneInformation) -> u32;
+            fn GetTimeZoneInformation(lp_time_zone_information: *mut TimeZoneInformation) -> u32;
         }
         let mut tzi = TimeZoneInformation {
             bias: 0,
