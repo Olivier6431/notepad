@@ -162,16 +162,7 @@ impl Notepad {
             }
             FileMsg::OpenFileSelected(path) => {
                 if let Some(path) = path {
-                    // If current tab is empty and unmodified, reuse it
-                    let doc = self.active_doc();
-                    let reuse = !doc.is_modified
-                        && doc.file_path.is_none()
-                        && doc.content.text().trim().is_empty();
-                    if !reuse {
-                        self.tabs.push(Document::default());
-                        self.active_tab = self.tabs.len() - 1;
-                    }
-                    self.load_from_file(path);
+                    return self.open_dropped_file(path);
                 }
                 Task::none()
             }
@@ -229,6 +220,19 @@ impl Notepad {
                 self.active_tab -= 1;
             }
         }
+    }
+
+    fn open_dropped_file(&mut self, path: PathBuf) -> Task<Message> {
+        let doc = self.active_doc();
+        let reuse = !doc.is_modified
+            && doc.file_path.is_none()
+            && doc.content.text().trim().is_empty();
+        if !reuse {
+            self.tabs.push(Document::default());
+            self.active_tab = self.tabs.len() - 1;
+        }
+        self.load_from_file(path);
+        Task::none()
     }
 
     // --- Edit operations ---
@@ -484,6 +488,10 @@ impl Notepad {
             self.window_width = size.width;
             self.window_height = size.height;
             self.save_preferences();
+        }
+
+        if let Event::Window(iced::window::Event::FileDropped(path)) = event {
+            return self.open_dropped_file(path);
         }
 
         if let Event::Keyboard(keyboard::Event::KeyPressed {
