@@ -1,11 +1,12 @@
 use iced::widget::{
     button, container, mouse_area, row, text, text_editor, text_input, Column, Row, Space, Stack,
 };
-use iced::{Element, Length, Padding, Theme};
+use iced::{Element, Font, Length, Padding, Theme};
 
 use crate::app::{
-    find_input_id, goto_input_id, replace_input_id, EditMsg, FileMsg, Menu, MenuMsg, Message,
-    Notepad, SearchMsg, SettingsMsg, ViewMsg, MENU_BAR_HEIGHT, MENU_ITEM_WIDTH, TAB_BAR_HEIGHT,
+    find_input_id, goto_input_id, replace_input_id, EditMsg, FileMsg, FormatMsg, Menu, MenuMsg,
+    Message, Notepad, SearchMsg, SettingsMsg, ViewMsg, MENU_BAR_HEIGHT, MENU_ITEM_WIDTH,
+    TAB_BAR_HEIGHT,
 };
 use crate::DEFAULT_FONT_SIZE;
 
@@ -14,6 +15,7 @@ const MENU_LABELS: &[(Menu, &str)] = &[
     (Menu::Edit, "Edition"),
     (Menu::Search, "Recherche"),
     (Menu::View, "Affichage"),
+    (Menu::Format, "Format"),
 ];
 
 const MENU_FONT_SIZE: f32 = 12.0;
@@ -381,6 +383,10 @@ impl Notepad {
         let gutter_width = digits as f32 * self.font_size * 0.6 + 20.0;
         let line_number_color = iced::Color { a: 0.45, ..bg_text };
 
+        let font_name: &'static str =
+            Box::leak(self.font_family.clone().into_boxed_str());
+        let editor_font = Font::with_name(font_name);
+
         let line_height = self.font_size * 1.3;
         let visible_lines =
             ((self.window_height - MENU_BAR_HEIGHT - TAB_BAR_HEIGHT) / line_height) as usize + 2;
@@ -392,6 +398,7 @@ impl Notepad {
             line_nums = line_nums.push(
                 container(
                     text(i.to_string())
+                        .font(editor_font)
                         .size(self.font_size)
                         .color(line_number_color),
                 )
@@ -421,6 +428,7 @@ impl Notepad {
         let editor = text_editor(&doc.content)
             .on_action(Message::EditorAction)
             .padding(10)
+            .font(editor_font)
             .size(self.font_size)
             .wrapping(if self.word_wrap {
                 text::Wrapping::Word
@@ -721,6 +729,22 @@ impl Notepad {
                         ),
                     ]
                 }
+                Menu::Format => crate::FONT_FAMILIES
+                    .iter()
+                    .map(|&family| {
+                        let label = if family == self.font_family {
+                            format!("• {}", family)
+                        } else {
+                            format!("  {}", family)
+                        };
+                        menu_item_widget(
+                            &label,
+                            "",
+                            Message::Format(FormatMsg::SetFontFamily(family.to_string())),
+                            shortcut_color,
+                        )
+                    })
+                    .collect(),
             };
 
             let item_count = items.len();

@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::app::{
-    find_input_id, goto_input_id, Document, EditMsg, FileMsg, LineEnding, MenuMsg, Message,
-    Notepad, SearchMsg, SettingsMsg, TextSnapshot, ViewMsg, FILE_SIZE_LIMIT_MB, FILE_SIZE_WARN_MB,
+    find_input_id, goto_input_id, Document, EditMsg, FileMsg, FormatMsg, LineEnding, MenuMsg,
+    Message, Notepad, SearchMsg, SettingsMsg, TextSnapshot, ViewMsg, FILE_SIZE_LIMIT_MB, FILE_SIZE_WARN_MB,
     LARGE_FILE_UNDO_HISTORY, MAX_UNDO_HISTORY, UNDO_BATCH_TIMEOUT_MS,
 };
 use crate::preferences::{SessionData, SessionTab, UserPreferences};
@@ -103,6 +103,7 @@ impl Notepad {
             Message::Search(msg) => self.handle_search(msg),
             Message::View(msg) => self.handle_view(msg),
             Message::Settings(msg) => self.handle_settings(msg),
+            Message::Format(msg) => self.handle_format(msg),
             Message::Menu(msg) => self.handle_menu(msg),
             Message::ScrollbarClick(ratio) => {
                 let doc = self.active_doc_mut();
@@ -633,6 +634,18 @@ impl Notepad {
         Task::none()
     }
 
+    // --- Format operations ---
+
+    fn handle_format(&mut self, msg: FormatMsg) -> Task<Message> {
+        match msg {
+            FormatMsg::SetFontFamily(name) => {
+                self.font_family = name;
+                self.save_preferences();
+            }
+        }
+        Task::none()
+    }
+
     // --- Menu operations ---
 
     fn handle_menu(&mut self, msg: MenuMsg) -> Task<Message> {
@@ -817,6 +830,7 @@ impl Notepad {
     pub fn save_preferences(&self) {
         UserPreferences {
             font_size: self.font_size,
+            font_family: self.font_family.clone(),
             dark_mode: self.dark_mode,
             word_wrap: self.word_wrap,
             window_width: self.window_width,

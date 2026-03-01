@@ -125,6 +125,7 @@ pub enum Menu {
     Edit,
     Search,
     View,
+    Format,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +197,11 @@ pub enum SettingsMsg {
 }
 
 #[derive(Debug, Clone)]
+pub enum FormatMsg {
+    SetFontFamily(String),
+}
+
+#[derive(Debug, Clone)]
 pub enum MenuMsg {
     Toggle(Menu),
     Hover(Menu),
@@ -212,6 +218,7 @@ pub enum Message {
     Search(SearchMsg),
     View(ViewMsg),
     Settings(SettingsMsg),
+    Format(FormatMsg),
     Menu(MenuMsg),
     ScrollbarClick(f32),
 }
@@ -251,6 +258,7 @@ pub struct Notepad {
     // App-wide
     pub clipboard: Option<arboard::Clipboard>,
     pub font_size: f32,
+    pub font_family: String,
     pub dark_mode: bool,
     pub word_wrap: bool,
     pub window_width: f32,
@@ -290,6 +298,7 @@ impl Default for Notepad {
             active_tab: 0,
             clipboard: arboard::Clipboard::new().ok(),
             font_size: DEFAULT_FONT_SIZE,
+            font_family: crate::DEFAULT_FONT_FAMILY.to_string(),
             dark_mode: false,
             word_wrap: true,
             window_width: DEFAULT_WINDOW_WIDTH,
@@ -324,6 +333,7 @@ impl Notepad {
         let prefs = UserPreferences::load();
         let mut notepad = Self {
             font_size: prefs.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE),
+            font_family: prefs.font_family,
             dark_mode: prefs.dark_mode,
             word_wrap: prefs.word_wrap,
             window_width: prefs.window_width,

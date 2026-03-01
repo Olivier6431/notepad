@@ -16,6 +16,7 @@ fn dir() -> PathBuf {
 #[serde(default)]
 pub struct UserPreferences {
     pub font_size: f32,
+    pub font_family: String,
     pub dark_mode: bool,
     pub word_wrap: bool,
     pub window_width: f32,
@@ -27,6 +28,7 @@ impl Default for UserPreferences {
     fn default() -> Self {
         Self {
             font_size: DEFAULT_FONT_SIZE,
+            font_family: crate::DEFAULT_FONT_FAMILY.to_string(),
             dark_mode: false,
             word_wrap: true,
             window_width: DEFAULT_WINDOW_WIDTH,
@@ -113,6 +115,7 @@ mod tests {
     fn serde_round_trip() {
         let prefs = UserPreferences {
             font_size: 18.0,
+            font_family: "Courier New".to_string(),
             dark_mode: true,
             word_wrap: false,
             window_width: 1024.0,

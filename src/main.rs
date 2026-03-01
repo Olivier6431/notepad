@@ -15,6 +15,16 @@ pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 pub const MIN_FONT_SIZE: f32 = 8.0;
 pub const MAX_FONT_SIZE: f32 = 40.0;
 pub const ZOOM_STEP: f32 = 2.0;
+pub const DEFAULT_FONT_FAMILY: &str = "Consolas";
+pub const FONT_FAMILIES: &[&str] = &[
+    "Consolas",
+    "Courier New",
+    "Cascadia Code",
+    "Lucida Console",
+    "Segoe UI",
+    "Arial",
+    "Times New Roman",
+];
 
 fn main() -> iced::Result {
     let prefs = UserPreferences::load();
